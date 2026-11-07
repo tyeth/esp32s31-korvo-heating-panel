@@ -365,11 +365,32 @@ void heating_broker_ready(bool online)
     /* A fresh session: the cards start from the saved targets until the TRVs
      * report, then every room's one zigbee2mqtt state topic is subscribed. */
     heating_load_targets();
+    int subscribed = 0;
     for (int i = 0; i < HEATING_ROOMS; i++) {
-        if (s_rooms[i].cfg.trv_topic[0]) app_mqtt_subscribe(s_rooms[i].cfg.trv_topic);
-        if (s_rooms[i].cfg.sensor_topic[0]) app_mqtt_subscribe(s_rooms[i].cfg.sensor_topic);
+        if (s_rooms[i].cfg.trv_topic[0]) subscribed += (app_mqtt_subscribe(s_rooms[i].cfg.trv_topic) >= 0);
+        if (s_rooms[i].cfg.sensor_topic[0]) subscribed += (app_mqtt_subscribe(s_rooms[i].cfg.sensor_topic) >= 0);
     }
-    ESP_LOGI(TAG, "subscribed to %d room topics", HEATING_ROOMS);
+    /* zigbee2mqtt only publishes a state topic when something changes, so
+     * nobody would hear from a TRV until a valve moves — request the current
+     * state of every topic, as a Home Assistant device does when it starts. */
+    int polled = heating_request_states();
+    ESP_LOGI(TAG, "subscribed to %d room topic(s); requested fresh state of %d", subscribed, polled);
+}
+
+int heating_request_states(void)
+{
+    /* zigbee2mqtt answers a (any) message on a device topic with its whole
+     * state payload, which is exactly the JSON the cards already parse. The
+     * air sensors are reached the same way when a topic is set. */
+    static const char kPoll[] = "";
+    int n = 0;
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        heating_room_t *room = &s_rooms[i];
+        if (room->cfg.trv_topic[0] && app_mqtt_publish(room->cfg.trv_topic, kPoll, 0, 0, false) >= 0) n++;
+        if (room->cfg.sensor_topic[0] && app_mqtt_publish(room->cfg.sensor_topic, kPoll, 0, 0, false) >= 0) n++;
+    }
+    if (n > 0) ESP_LOGI(TAG, "state requested for %d topic(s)", n);
+    return n;
 }
 
 /* ── persistence: factory reset ──────────────────────────────────────── */

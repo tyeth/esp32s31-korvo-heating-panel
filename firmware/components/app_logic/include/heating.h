@@ -116,6 +116,12 @@ int16_t heating_clamp_tenth(int16_t tenth);
 /** Publish {"time": 254} to the zigbee2mqtt permit-join request topic. */
 esp_err_t heating_permit_join(void);
 
+/** Ask every configured room topic (TRV and air sensor) for its current state:
+ *  zigbee2mqtt only publishes on change, so this is what fills the cards at
+ *  boot instead of waiting for a valve to move. Returns how many topics were
+ *  asked. */
+int heating_request_states(void);
+
 /* ── inbound ─────────────────────────────────────────────────────────── */
 
 /** Feed one state message received on @p topic. */
