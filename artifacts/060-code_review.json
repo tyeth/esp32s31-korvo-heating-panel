@@ -1,0 +1,188 @@
+{
+  "agent": "code_review",
+  "seq": 60,
+  "savedAt": "2026-11-07T23:56:28.432Z",
+  "report": {
+    "result": "pass",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish current_heating_setpoint to zigbee2mqtt/<TRV> (qos1, retain 0); on connect subscribe every TRV/air-sensor topic and publish an empty message to each; time 254 to zigbee2mqtt/bridge/request/permit_join; retained status topic zerocode/mac/status with last-will. HTTP /settings, /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init (mdns non-fatal)",
+          "app_mqtt_init (queue + mqtt_net; STA when credentials exist, otherwise AP-only onboarding)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "expectedLogPatterns": [
+          "app_audio: DSP dot product: generic kernel linked (generic C (app_dsp_shim))",
+          "heating_voice: 17 of 17 English phrases registered",
+          "app_display: Panel display_lcd generic_rgb rgb 800x480; Display initialized (one setup pass)",
+          "heating_ui: dashboard up (4 rooms)",
+          "app_mqtt: MQTT initialized (node ...); then Wi-Fi got IP and MQTT connecting to ... from mqtt_net",
+          "app_mqtt: SoftAP 'Korvo-Heating-XXXX' (password 'heatpanel') when no Wi-Fi is stored (radio in AP mode)",
+          "app_console: Console ready; app_main: ZeroCode AI firmware started"
+        ],
+        "findings": [
+          {
+            "area": "correctness",
+            "description": "The net task calls esp_wifi_connect() on WIFI_EVENT_STA_START but never checks whether the radio is in station mode. With the onboarding AP up (WIFI_MODE_AP, credentials still empty) esp_wifi_start() raises STA_START once, the task answers it with esp_wifi_connect(), and the driver rejects it with ESP_ERR_WIFI_MODE; the return value is ignored.",
+            "evidence": "app_mqtt.cpp:283-287 net_task STA_START branch calls esp_wifi_connect() with no mode check; app_mqtt.cpp:449-456 app_mqtt_ap_start uses esp_wifi_set_mode(WIFI_MODE_AP) then esp_wifi_start() only; esp_wifi_connect() returns ESP_ERR_WIFI_MODE when the station interface is not enabled.",
+            "failureScenario": "Boot a factory-fresh panel: the AP comes up in AP mode, STA_START fires, mqtt_net calls esp_wifi_connect(), the call fails with ESP_ERR_WIFI_MODE and nothing else happens — onboarding still works, but the failure is invisible and the driver state is misleading to anyone debugging it.",
+            "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+            "line": 285,
+            "severity": "info",
+            "suggestedChange": "Call esp_wifi_connect() only when the current mode includes the station interface (track the mode alongside s_wifi_started) and log the return value."
+          },
+          {
+            "area": "correctness",
+            "description": "The Wi-Fi/IP event queue is created inside the `if (s_net_task == NULL)` guard while both esp_event_handler_register() calls pass s_net_queue unconditionally; a second init after a failed task creation registers handlers with NULL and every Wi-Fi event becomes a silent no-op.",
+            "evidence": "app_mqtt.cpp:744-754 (queue and task created only inside the guard, registration outside it); app_mqtt.cpp wifi_event_handler returns early when the queue is NULL.",
+            "failureScenario": "A second app_mqtt_init() after xTaskCreate failed leaves s_net_task NULL and s_net_queue stale or NULL: the handlers enqueue nothing, STA_START is never answered, the panel never associates and shows 'connecting' with no diagnostic.",
+            "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+            "line": 745,
+            "severity": "info",
+            "suggestedChange": "Create the queue outside the guard and verify it before registering the handlers."
+          },
+          {
+            "area": "spec_alignment",
+            "description": "The factory reset remains a 10 s hold of the single front button rather than the spec's SET+MODE combination.",
+            "evidence": "app_logic.cpp:375-376 registers COMBO_ARM_MS on handles[0]; on_set_arm arms the 10 s NVS wipe.",
+            "failureScenario": "A finger resting on the front button for 10 s erases Wi-Fi, broker and room topics without a second confirming button.",
+            "file": "firmware/components/app_logic/app_logic.cpp",
+            "line": 375,
+            "severity": "info",
+            "suggestedChange": "Keep the spec combination or require a second confirmation inside the countdown."
+          }
+        ],
+        "filesReviewed": [
+          "artifacts/056-code_review.json",
+          "artifacts/057-functional_testing.json",
+          "artifacts/058-code_writing.json",
+          "artifacts/059-firmware_compilation.json",
+          "firmware/components/app_mqtt/app_mqtt.cpp"
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button - click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD 800x480",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "No MDNS symbol exists in the generated sdkconfig.h (no mdns Kconfig is sourced), so CONFIG_MDNS_TASK_STACK_SIZE has no effect; the writer acknowledged this and the last 2.5-minute idle run did not reproduce the mdns abort, so the exposure is unproven and must be re-checked on hardware.",
+          "The commissioned-reboot crash changed shape (now a CPU cache fault inside the Wi-Fi driver at an unmapped PC); the new fix (start the station from mqtt_net, radio restarted in STA mode after commissioning instead of APSTA) has not been exercised yet.",
+          "The onboarding AP now runs in AP mode only, so a panel is either an access point or a station, never both.",
+          "Standing deviations: plain-MQTT default broker, empty-payload TRV poll, single-button factory reset, three-number voice vocabulary."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (single setup task, lvgl_port_add_disp_rgb + add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim generic dot product",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (queue-fed mqtt_net starts the station; AP-only onboarding; STA restart on commissioning; CA in NVS)",
+            "part": "Wi-Fi / MQTT"
+          },
+          {
+            "driver": "app_webui (httpd always, mdns non-fatal)",
+            "part": "web UI / mDNS"
+          }
+        ],
+        "previousFindingsStatus": [
+          {
+            "evidence": "app_mqtt.cpp:283-287 esp_wifi_connect() now runs on mqtt_net; app_mqtt.cpp:531-545 app_mqtt_set_wifi stops the radio and restarts it via mqtt_wifi_start() in STA mode instead of configuring a station on a live APSTA interface.",
+            "finding": "fail - commissioned reboot aborts with a CPU Cache error inside ieee80211 station start",
+            "status": "addressed in code; not yet re-tested on a reboot"
+          },
+          {
+            "evidence": "No MDNS symbol in firmware/build/config/sdkconfig.h; the mdns Kconfig is not in firmware/build/kconfigs.in; app_webui.cpp mdns_init() failure is non-fatal.",
+            "finding": "warning - CONFIG_MDNS_TASK_STACK_SIZE absent from the generated header",
+            "status": "confirmed by the writer; the line has no effect, the idle abort did not reproduce in the last run and remains to be checked on hardware"
+          },
+          {
+            "evidence": "app_mqtt.cpp queue creation and registration code read this round.",
+            "finding": "info - queue created under a conditional guard",
+            "status": "unchanged"
+          },
+          {
+            "evidence": "app_display.cpp single setup path; functional runs show one registration.",
+            "finding": "display double bring-up / boot loop",
+            "status": "fixed and confirmed"
+          },
+          {
+            "evidence": "heating_voice.cpp k_variant_tenth 200, 215, 210.",
+            "finding": "voice vocabulary lacks the spec example",
+            "status": "unchanged, left for the owner"
+          },
+          {
+            "evidence": "app_mqtt.cpp HEATING_DEFAULT_BROKER_URI mqtt://homeassistant.gdenu.fi:1883.",
+            "finding": "default broker is plain MQTT",
+            "status": "unchanged, owner choice"
+          },
+          {
+            "evidence": "heating.cpp heating_request_states publishes an empty payload to each TRV state topic.",
+            "finding": "state poll writes to zigbee2mqtt device command topics",
+            "status": "unchanged"
+          },
+          {
+            "evidence": "app_logic.cpp 375-376 COMBO_ARM_MS on handles[0].",
+            "finding": "factory reset is a single 10 s button hold",
+            "status": "unchanged, documented deviation"
+          }
+        ]
+      },
+      "summary": "The reboot crash is addressed in code (station start moved to mqtt_net, commissioning restarts the radio in STA mode instead of APSTA) and builds clean, but it has not been re-tested; two new info notes (esp_wifi_connect on STA_START without a mode check, queue created under a conditional guard) and the acknowledged no-op mdns stack line remain."
+    }
+  }
+}
