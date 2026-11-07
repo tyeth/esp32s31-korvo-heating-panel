@@ -213,8 +213,11 @@ static void render_page(bool saved)
                          "placeholder=\"leave empty to keep the current one\"></label>");
 
     app_webui_send_chunk("<h2>MQTT broker</h2>");
+    app_webui_send_chunk("<p style='font-size:12px;color:#888'>The broker is not the Home "
+                         "Assistant web page: use the broker's own port — mqtt://…:1883, or "
+                         "mqtts://…:8883 when the add-on's TLS listener is on.</p>");
     field("broker", "Broker URI (mqtts:// for TLS)", app_mqtt_broker_uri(),
-          "mqtts://homeassistant.gdenu.fi:8123");
+          "mqtt://homeassistant.gdenu.fi:1883");
     app_webui_send_chunk("<label>Broker password<br><input name=\"apass\" type=password "
                          "placeholder=\"leave empty to keep the current one\"></label>");
     app_webui_send_chunk("<p style='font-size:12px;color:#888'>TLS is used for an mqtts:// URI. "

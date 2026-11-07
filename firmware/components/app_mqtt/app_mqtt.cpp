@@ -135,13 +135,15 @@ void app_mqtt_set_online(bool online)
     }
 }
 
-/** The broker URI this panel ships with: the household's Home Assistant
- *  Mosquitto add-on. Home Assistant terminates TLS itself on 8123, so the
- *  broker is reached over mqtts on that same port. Its certificate is valid
- *  for a different name than the one the household dials, so the TLS session
- *  skips the name check (see mqtt_start_client()); everything else about the
- *  connection is ordinary MQTT over TLS. */
-#define HEATING_DEFAULT_BROKER_URI "mqtts://homeassistant.gdenu.fi:8123"
+/** The broker URI this panel ships with: the Mosquitto add-on that usually runs
+ *  beside Home Assistant. It is a DIFFERENT PORT from the web UI — Home
+ *  Assistant's own site is HTTPS on 8123, while the broker listens on plain
+ *  MQTT 1883, or 8883 when the add-on's TLS listener is enabled. Point this at
+ *  whichever listener the household actually exposes (and at 8883 if that
+ *  listener carries TLS); /settings overrides it without a rebuild. The
+ *  certificate is issued for a different name than the one dialled, so a TLS
+ *  session here skips the name check — see mqtt_start_client(). */
+#define HEATING_DEFAULT_BROKER_URI "mqtt://homeassistant.gdenu.fi:1883"
 #define HEATING_DEFAULT_BROKER_USER ""
 
 /* The home network this panel is made for. Used only when nothing is stored
@@ -195,14 +197,11 @@ static void mqtt_start_client(void)
     if (s_user[0]) cfg.credentials.username = s_user;
     if (s_mqtt_pass[0]) cfg.credentials.authentication.password = s_mqtt_pass;
 
-    /* The household's broker (Home Assistant's Mosquitto add-on at
-     * https://homeassistant.gdenu.fi:8123) presents a VALID certificate for a
-     * different name — Home Assistant's own *.ui.nabu.casa host. The session
-     * still runs over TLS; only the name check is skipped, which is the whole
-     * difference between "encrypted" and "encrypted to the right server" for a
-     * name nobody can make this broker answer. If a root CA is provided it is
-     * still used to authenticate the chain, so an impostor with an untrusted
-     * certificate is still refused (a wrong-hostname check is not simply off). */
+    /* A TLS broker session (mqtts:// or :8883) skips the certificate NAME check:
+     * the household's server presents a valid certificate issued for a
+     * different host than the one dialled. The chain is still verified — against
+     * the built-in pack, or the CA supplied on the settings page — so an
+     * impostor with an untrusted certificate is refused. */
     if (mqtt_uri_is_tls(s_uri)) {
         cfg.broker.verification.skip_cert_common_name_check = true;
         if (s_ca_pem != NULL && s_ca_pem[0] != 0) {
