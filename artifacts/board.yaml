@@ -1,6 +1,3 @@
 schema: zc-board/1
-selected: esp32s31_module
+selected: esp32-s31-korvo-1
 chip: esp32s31
-bmgr:
-  board: esp32s31_module
-  resolved_from: fallback
