@@ -1,0 +1,159 @@
+{
+  "agent": "code_review",
+  "seq": 23,
+  "savedAt": "2026-11-07T16:15:50.735Z",
+  "report": {
+    "result": "fail",
+    "summary": "The pinned CA is now persisted and clearable as claimed, but the boot-blocking voice crash is NOT fixed: the new app_dsp_shim archive is never linked (PRIV_REQUIRES without any reference, no WHOLE_ARCHIVE), so the image still resolves dsps_dotprod_f32_arp4 to esp-dsp's assembly that faults on the first audio frame.",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV> (qos1, retain 0); {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe each TRV state topic and each air-sensor topic per session; retained status zerocode/<mac12>/status with last-will. HTTP /settings (GET/POST), /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init — vocabulary registered, AFE/MultiNet started (dot product now on the generic C kernel)",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (mqtt_load_config incl. CA, then STA or onboarding AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup (guided)"
+        ],
+        "expectedLogPatterns": [
+          "heating_voice: \"21 of 21 phrases registered\"",
+          "MODEL_LOADER: \"Successfully load srmodels\" — followed now by the rest of boot (no dsps_dotprod_f32_arp4 fault)",
+          "app_mqtt: \"no broker saved — default mqtts://homeassistant.gdenu.fi:8123\" on a fresh panel; \"MQTT connecting to … (TLS, certificate name check skipped)\"",
+          "heating_ui: \"dashboard up (4 rooms)\"",
+          "heating_panel: \"front buttons bound (1) — click = push-to-talk, double click = dismiss, hold 10000 ms = factory reset\", \"heating panel logic up\"",
+          "app_main: \"ZeroCode AI firmware started\"",
+          "app_console: \"Console ready. Type 'help' for commands.\""
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip (off / dim white / green / amber / red flash)",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button — click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch (board-owned)",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "The previous boot-blocking crash persists: the linked firmware still resolves dsps_dotprod_f32_arp4 to esp-dsp's misaligned-instruction assembly (objdump/addr2line evidence + the functional log's fault address).",
+          "The new app_dsp_shim archive is not linked because app_dsp_shim dsp is declared PRIV_REQUIRES but no file in the component references it, so --as-needed drops it.",
+          "other app_dsp_shim details once linked: the shim's implementation lacks the 4-byte alignment guard/rescale of esp-dsp's C version, and nothing names it on any other symbol. Even so, once the shim is linked, the crash is expected to vanish; adding anything else in esp-dsp that uses a hardware-loop kernel would need a similar check."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (lvgl_port_add_disp / lvgl_port_add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) — currently crashes in the front end",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (STA + onboarding SoftAP, CA in NVS)",
+            "part": "Wi-Fi"
+          },
+          {
+            "driver": "app_mqtt esp-mqtt over TLS",
+            "part": "MQTT broker"
+          }
+        ]
+      },
+      "filesReviewed": [
+        "artifacts/019-code_review.json",
+        "artifacts/020-functional_testing.json",
+        "artifacts/021-code_writing.json",
+        "artifacts/022-firmware_compilation.json",
+        "artifacts/device.log",
+        "firmware/components/app_dsp_shim/CMakeLists.txt",
+        "firmware/components/app_dsp_shim/dsps_dotprod_arp4.c",
+        "firmware/components/app_audio/CMakeLists.txt",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/sdkconfig.defaults",
+        "firmware/build/zerocode_ai_firmware.map"
+      ],
+      "findings": [
+        {
+          "area": "linkage",
+          "description": "The dmsp shim does not take effect: the built firmware still links esp-dsp's `dsps_dotprod_f32_arp4.S.obj` and the functional log faults at that exact symbol. Cause: app_dsp_shim is listed in app_audio's PRIV_REQUIRES but no file in app_audio #includes or calls anything from it, so the static archive is never pulled in; the linker sees no object and esp-dsp's assembly member is still the one that satisfies the prebuilt esp-sr reference. The CMakeLists comment (\"components are processed in dependency order … the linker resolves it here\") is not how static linking works — an archive member is only pulled in by an unresolved symbol.",
+          "evidence": "firmware/build/zerocode_ai_firmware.map:1627/96828 `dsps_dotprod_f32_arp4 esp-idf/espressif__esp-dsp/libespressif__esp-dsp.a(dsps_dotprod_f32_arp4.S.obj)` with no libapp_dsp_shim.a entry anywhere; app_dsp_shim/CMakeLists.txt:1-12 (no WHOLE_ARCHIVE, no reference); app_audio/CMakeLists.txt:19 (PRIV_REQUIRES only); artifacts/device.log: backtrace #0 `dsps_dotprod_f32_arp4 () at managed_components/espressif__esp-dsp/modules/dotprod/float/dsps_dotprod_f32_arp4.S:52`.",
+          "failureScenario": "Boot the flashed image: app_audio_init starts the AFE, the first wake-word feature frame calls dsps_dotprod_f32_arp4, which is still the assembly kernel with the `esp.lp.setup` instruction, the emulator (and presumably the silicon) takes an instruction-misaligned trap and the panel aborts before display, web, MQTT and the console — every spec feature remains unreachable, exactly as the functional report describes.",
+          "file": "firmware/components/app_dsp_shim/CMakeLists.txt",
+          "line": 9,
+          "severity": "critical",
+          "suggestedChange": "Force the shim's member into the link, e.g. by making it a name-colliding shared dependency listed before esp-dsp with a reference from app_audio, marking the component WHOLE_ARCHIVE (or the file a linker-enforced OBJECT library), or renaming the component to something esp-sr's prebuilt archive itself depends on so the archive is always searched before esp-dsp; then confirm in the map that the symbol resolves to libapp_dsp_shim.a and the image no longer contains dsps_dotprod_f32_arp4.S.obj."
+        },
+        {
+          "area": "info",
+          "description": "The shim's arithmetic is a plain C accumulation while esp-dsp's C implementation (dsps_dotprod_f32_ansi) applies a 4-sample alignment guard and partial-vector handling; once the symbol is linked from the shim, feature extraction will differ in rounding from every reference build.",
+          "evidence": "app_dsp_shim/dsps_dotprod_arp4.c:35-42 (simple loop, no alignment split).",
+          "failureScenario": "Wake-word detection thresholds tuned against esp-dsp's C implementation may be slightly different (rare false negatives), and results differ between the shim and any code path that uses dsps_dotprod_f32_ansi directly (the map shows dsps_sqrt_f32_ansi referenced by esp-sr, so mixed references are already a pattern).",
+          "file": "firmware/components/app_dsp_shim/dsps_dotprod_arp4.c",
+          "line": 35,
+          "severity": "info",
+          "suggestedChange": "Reuse esp-dsp's own ANSI implementation body (guarded with the same alignment check) rather than a simplified loop, so the behaviour is identical on every path."
+        }
+      ],
+      "previousFindingsStatus": [
+        {
+          "evidence": "artifacts/020-functional_testing.json result fail; artifacts/device.log: `Firmware abort: Instruction address misaligned`, backtrace #0 `dsps_dotprod_f32_arp4 () at … dsps_dotprod_f32_arp4.S:52`; map still attributes the symbol to esp-dsp's assembly object with no app_dsp_shim archive.",
+          "finding": "fail — boot aborts in dsps_dotprod_f32_arp4 (esp-dsp asm) during wake-word feature extraction",
+          "status": "NOT fixed"
+        },
+        {
+          "evidence": "app_mqtt.cpp:402-408 `nvs_get_str(h, \"ca\", …)` in mqtt_load_config; app_mqtt.cpp:485-509 app_mqtt_set_broker_ca writes/erases the 'ca' key; heating_web.cpp:328-336 a lone '-' clears it.",
+          "finding": "info — pinned CA not persisted and cannot be cleared from the page",
+          "status": "fixed (verified)"
+        },
+        {
+          "evidence": "app_mqtt.cpp:199-203 skip_cert_common_name_check for every TLS URI, kept at the owner's request.",
+          "finding": "warning — fleet-wide TLS certificate name check skipped",
+          "status": "accepted by owner (kept)"
+        }
+      ]
+    }
+  }
+}
