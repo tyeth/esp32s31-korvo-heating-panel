@@ -1,3 +1,6 @@
 schema: zc-board/1
 selected: esp32-s31-korvo-1
 chip: esp32s31
+bmgr:
+  board: esp32_s31_korvo_1
+  resolved_from: exact
