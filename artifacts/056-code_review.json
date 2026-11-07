@@ -1,0 +1,203 @@
+{
+  "agent": "code_review",
+  "seq": 56,
+  "savedAt": "2026-11-07T22:26:27.878Z",
+  "report": {
+    "result": "pass",
+    "summary": "Configured boot now reaches the console and mDNS failure is no longer fatal; the only regression claim that does not hold is the mdns stack size, which is absent from the generated sdkconfig.h (no MDNS symbol at all) — kept as a warning because this wrapper only lets a defect-bearing critical block.",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish current_heating_setpoint to zigbee2mqtt/<TRV> (qos1, retain 0); on connect subscribe every TRV/air-sensor topic and publish an empty message to each; time 254 to zigbee2mqtt/bridge/request/permit_join; retained status topic zerocode/mac/status with last-will. HTTP /settings, /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init",
+          "app_display_init + heating_ui_init (waits for app_display_ready)",
+          "heating_web_install",
+          "app_webui_init (mdns_init non-fatal, httpd starts regardless)",
+          "app_mqtt_init (queue + mqtt_net task, NVS config or compiled defaults, STA / onboarding AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "expectedLogPatterns": [
+          "app_audio: DSP dot product: generic kernel linked (generic C (app_dsp_shim))",
+          "heating_voice: 17 of 17 English phrases registered",
+          "app_display: one Display setup started; Panel display_lcd generic_rgb rgb 800x480; Display initialized",
+          "heating_ui: dashboard up (4 rooms)",
+          "app_webui: Web UI ready, or mDNS unavailable - reach the panel by its IP",
+          "app_mqtt: MQTT initialized (node ...); on association the mqtt_net task logs Wi-Fi got IP then MQTT connecting to ...",
+          "app_console: Console ready; app_main: ZeroCode AI firmware started"
+        ],
+        "findings": [
+          {
+            "area": "config",
+            "description": "The new CONFIG_MDNS_TASK_STACK_SIZE=8192 in sdkconfig.product does not reach the build: the mDNS component Kconfig is not among the Kconfigs the build sources and no MDNS symbol at all is defined in the generated header, so mdns keeps its default 4096-byte task stack and the idle mdns overflow will recur.",
+            "evidence": "firmware/sdkconfig.product line 22 sets CONFIG_MDNS_TASK_STACK_SIZE=8192; searching firmware/build/config/sdkconfig.h, sdkconfig.cmake and sdkconfig.json for MDNS returns no match; firmware/build/kconfigs.in has no line sourcing firmware/managed_components/espressif__mdns/Kconfig; app_webui.cpp 259-269 calls mdns_init() unconditionally.",
+            "failureScenario": "Boot a fresh panel and leave it idle: mdns_init() creates the mdns task with its default 4096-byte stack, the configured 8192 never took effect, and 15-30 s later the panel aborts with a stack overflow in task mdns, the same failure report 053 recorded and report 054 claims to have fixed.",
+            "file": "firmware/sdkconfig.product",
+            "line": 22,
+            "severity": "warning",
+            "suggestedChange": "Verify in firmware/build/kconfigs.in and build/config/sdkconfig.h that the mdns Kconfig is sourced and MDNS_TASK_STACK_SIZE is present, or keep mDNS out of the boot path when it cannot be sized."
+          },
+          {
+            "area": "correctness",
+            "description": "The reboot-path stack overflow in sys_evt is neither fixed nor diagnosed: the writer kept the 8192 already in the image and states the cause is unknown, so a commissioned panel can still abort shortly after a restart.",
+            "evidence": "artifacts/053-functional_testing.json stability fails with a stack overflow in task sys_evt about 700 ms after the reboot; artifacts/054-code_writing.json records the value as unchanged; firmware/build/config/sdkconfig.h line 744 shows 8192.",
+            "failureScenario": "A commissioned panel is power-cycled: boot reaches MQTT initialized, the reboot Wi-Fi event storm runs on sys_evt, about 700 ms later the panel aborts before app_logic and the console, so the panel stays dark until the next reset.",
+            "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+            "line": 244,
+            "severity": "info",
+            "suggestedChange": "Instrument rather than resize again: log uxTaskGetStackHighWaterMark for sys_evt and the Wi-Fi driver task after the first post-reboot association, or move the station start off esp_wifi_start, then re-test a restart out of a configured session twice."
+          },
+          {
+            "area": "spec_alignment",
+            "description": "Standing deviation carried from earlier rounds: the factory reset is a 10 s hold of the single front button, not the spec SET+MODE combination.",
+            "evidence": "app_logic.cpp 375-376 registers COMBO_ARM_MS on handles[0]; on_set_arm arms the 10 s NVS wipe.",
+            "failureScenario": "A user resting a finger on the front button for 10 s wipes Wi-Fi, broker and the room table with no second button confirming intent.",
+            "file": "firmware/components/app_logic/app_logic.cpp",
+            "line": 375,
+            "severity": "info",
+            "suggestedChange": "Keep the spec SET+MODE combination or require a second confirmation inside the countdown."
+          }
+        ],
+        "filesReviewed": [
+          "artifacts/052-code_review.json",
+          "artifacts/053-functional_testing.json",
+          "artifacts/054-code_writing.json",
+          "artifacts/055-firmware_compilation.json",
+          "firmware/sdkconfig.product",
+          "firmware/components/app_webui/app_webui.cpp",
+          "firmware/components/app_mqtt/app_mqtt.cpp",
+          "firmware/components/app_mdnscfg/CMakeLists.txt",
+          "firmware/components/app_mdnscfg/idf_component.yml",
+          "firmware/components/app_mdnscfg/include/app_mdnscfg.h",
+          "firmware/components/app_mdnscfg/notes.txt",
+          "firmware/build/config/sdkconfig.h",
+          "firmware/build/kconfigs.in",
+          "firmware/build/config.env"
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button - click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD 800x480",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE is 8192 in build/config/sdkconfig.h line 744 and the mqtt_net queue dispatch works: the configured boot reaches the console.",
+          "No MDNS symbol exists in the generated sdkconfig.h and firmware/build/kconfigs.in does not source the mdns Kconfig, so the claimed CONFIG_MDNS_TASK_STACK_SIZE=8192 is not in the image.",
+          "app_mdnscfg (empty header, notes.txt, idf_component.yml pinning espressif/mdns ~1.11.3) is in the tree but does not bring the mdns Kconfig into the Kconfig evaluation.",
+          "The sys_evt overflow on the reboot path remains unexplained at 8 KB.",
+          "Standing spec deviations unchanged: plain-MQTT default broker, empty-payload TRV poll, single-button factory reset, three-number voice vocabulary."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (single setup task, lvgl_port_add_disp_rgb + add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim generic dot product",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (queue-fed mqtt_net task; STA / onboarding SoftAP; CA in NVS)",
+            "part": "Wi-Fi / MQTT"
+          },
+          {
+            "driver": "app_webui (httpd always, mdns non-fatal, mDNS task stack NOT raised in the built image)",
+            "part": "web UI / mDNS"
+          }
+        ],
+        "previousFindingsStatus": [
+          {
+            "evidence": "app_mqtt.cpp wifi_event_handler only queues into s_net_queue; all work runs on net_task; the functional report shows the configured boot reaching the console.",
+            "finding": "configured boot aborts with a stack overflow in sys_evt right after MQTT init",
+            "status": "fixed for the boot path; a second sys_evt hit at 8 KB on the reboot path remains"
+          },
+          {
+            "evidence": "app_webui.cpp 259-269 logs an mdns_init() failure and starts the httpd regardless.",
+            "finding": "idle abort with a stack overflow in task mdns 15-30 s after boot",
+            "status": "NOT fixed: the intended mdns stack size is absent from the built sdkconfig.h"
+          },
+          {
+            "evidence": "app_mqtt.cpp queue creation and the corrected comment naming esp_event_handler_register.",
+            "finding": "queue created under a conditional guard in app_mqtt",
+            "status": "unchanged in code; acknowledged by the writer"
+          },
+          {
+            "evidence": "app_webui.cpp mdns_init() failure no longer aborts.",
+            "finding": "mDNS failure could cost the settings page",
+            "status": "fixed"
+          },
+          {
+            "evidence": "app_display.cpp single setup path; functional runs show one registration.",
+            "finding": "display double bring-up / boot loop",
+            "status": "fixed and confirmed"
+          },
+          {
+            "evidence": "heating_voice.cpp k_variant_tenth 200, 215, 210 - 17 phrases.",
+            "finding": "voice vocabulary lacks the spec example set the office to 21",
+            "status": "unchanged, left for the owner"
+          },
+          {
+            "evidence": "app_mqtt.cpp HEATING_DEFAULT_BROKER_URI mqtt://homeassistant.gdenu.fi:1883.",
+            "finding": "default broker is plain MQTT",
+            "status": "unchanged, owner choice"
+          },
+          {
+            "evidence": "heating.cpp heating_request_states publishes an empty payload to every TRV state topic.",
+            "finding": "state poll writes to zigbee2mqtt device command topics",
+            "status": "unchanged"
+          },
+          {
+            "evidence": "app_logic.cpp 375-376 COMBO_ARM_MS on handles[0].",
+            "finding": "factory reset is a single 10 s button hold",
+            "status": "unchanged, documented deviation"
+          }
+        ]
+      }
+    }
+  }
+}
