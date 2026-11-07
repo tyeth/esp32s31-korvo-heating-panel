@@ -1,0 +1,106 @@
+{
+  "agent": "functional_testing",
+  "seq": 20,
+  "savedAt": "2026-11-07T16:09:34.836Z",
+  "report": {
+    "result": "fail",
+    "summary": "Firmware flashes and boots through driver init, but aborts with \"Instruction address misaligned\" inside esp-dsp (dsps_dotprod_f32_arp4) during wake-word feature extraction right after the voice command vocabulary registers — the emulator dies before the REPL/app_logic init, so no feature can be exercised.",
+    "report": {
+      "tests": [
+        {
+          "name": "Flash and boot to app_main",
+          "category": "boot",
+          "result": "pass",
+          "details": "Flash succeeded, image loaded from ota_0, board manager + drivers initialised (I2S, ES8389 codec, WS2812 strip on GPIO37, GT1151 touch, RGB LCD, ADC button group, boot button on GPIO61). SD-card mount fails (no card in the emulator) and the camera SCCB probe logs an error, but the OV3660 is then detected — no wrong behaviour attributable to the product.",
+          "evidence": "I (664) BOARD_MANAGER: Board manager initialized / I (664) app_driver: Hardware drivers initialized / I (664) heating: no saved room table — using the defaults"
+        },
+        {
+          "name": "Voice model / vocabulary init",
+          "category": "voice",
+          "result": "pass",
+          "details": "Wake word wn9_hiesp and mn7_en MultiNet loaded from the 'model' partition; heating_voice registers all 21 phrases covering the four rooms plus kitchen/bedroom refusal phrases, 'plus one' and 'cancel'.",
+          "evidence": "I (664) MODEL_LOADER: Successfully load srmodels / I (1004) heating_voice: 21 of 21 phrases registered / 21 active speech commands (1600-1620)"
+        },
+        {
+          "name": "Stable boot — no crash / panic",
+          "category": "stability",
+          "result": "fail",
+          "details": "Immediately after the speech commands are built, hart1 faults with an illegal instruction / 'Instruction address misaligned' and the firmware aborts. The emulator process exits (exit code 1); the serial log ends there. Nothing after app_audio_init runs: no app_display_init/heating_ui_init ('dashboard up (4 rooms)' never appears), no heating_web_install/app_webui_init, no app_mqtt_init, no diagnostics_clock_init, no app_logic_init ('heating panel logic up' never appears), no app_console_init, and no 'ZeroCode AI firmware started'. This is a boot-blocking crash that stops the REPL from ever coming up, so the whole functional checklist is unreachable.",
+          "evidence": "[WARN machine::rom_stubs] panic_info: reason='Instruction address misaligned' desc='Exception was unhandled.' info.addr=0x4012AF74 | Firmware abort: Instruction address misaligned / Backtrace: #0 0x4012af74 in dsps_dotprod_f32_arp4 () at managed_components/espressif__esp-dsp/modules/dotprod/float/dsps_dotprod_f32_arp4.S:52, #11 esp_mel_dotprod_f32 () at components/c_speech_features/esp_speech_features/esp_speech_features.c:209, #29 esp_mel_dotprod_step () / [host] emulator stopped: esp-emu exited on its own (exit code 1)"
+        },
+        {
+          "name": "Console REPL (help, uptime, chip, version, heap)",
+          "category": "console",
+          "result": "unverified",
+          "details": "Never reached — app_console_init runs after the failing audio init, and the emulator aborted before the REPL appeared. No command could be sent."
+        },
+        {
+          "name": "heating set <room 0-3> <degC> and 'already set' 30 s guard (f17)",
+          "category": "connectivity",
+          "result": "unverified",
+          "details": "requires the console (app_logic_init) which never came up; also needs a broker peer to observe the published payload."
+        },
+        {
+          "name": "MQTT publish {\"current_heating_setpoint\":\"x.y\"} to TRV state topic (f4/f16), permit_join {\"time\":254} (f10)",
+          "category": "connectivity",
+          "result": "unverified",
+          "details": "No network peers in the emulator and MQTT never started before the abort; no evidence either way."
+        },
+        {
+          "name": "TRV state parsing, system_mode heating/off, air-sensor override (f15/f18/f7)",
+          "category": "connectivity",
+          "result": "unverified",
+          "details": "Needs synthetic zigbee2mqtt payloads from a broker; unreachable here."
+        },
+        {
+          "name": "Dashboard 2x2 room grid, selection, +/- 0.5 °C, overlays (f2/f3/f8/f19/f13/f17)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "Touch input, display rendering and the on-screen banners cannot be observed on this device, and heating_ui_init never ran anyway."
+        },
+        {
+          "name": "Status LED colours (dim white/green/amber/red flash) (f6/f12)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "LED strip driver binds successfully (1 LED, GPIO37) but colour is a physical observation not available from the serial log/emulator."
+        },
+        {
+          "name": "Push-to-talk front button / BOOT button / wake word listening window (f1/f11/f9)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "Requires a physical button press or real microphone audio. Also blocked: the audio pipeline aborts on the first wake-word feature extraction."
+        },
+        {
+          "name": "SoftAP + mDNS onboarding and settings web page (/settings, /api/state, /api/set) (f5)",
+          "category": "commissioning",
+          "result": "unverified",
+          "details": "app_webui_init never ran (crash before it). Onboarding also needs a controller/browser, which is deferred to the testing expert on real hardware."
+        },
+        {
+          "name": "Factory reset 10 s hold, NVS-persisted targets surviving reboot (f13, power blip)",
+          "category": "stability",
+          "result": "unverified",
+          "details": "Button hold is physical; persistence could not be observed because the firmware dies at the same point on every boot before any NVS read of targets beyond the room table load."
+        }
+      ],
+      "deviceInfo": {
+        "chip": "esp32s31",
+        "board": "esp32-s31-korvo-1",
+        "emulator": "ESP32 series emulator v0.50.0, user-mode network backend",
+        "appVersion": "1.0.0",
+        "idfVersion": "e9da155a (6.2.0-dev)",
+        "flashSize": "16MB, ota_0 at 0x20000",
+        "psram": "16MB, 200MHz",
+        "cpuFreq": "320 MHz",
+        "crashPoint": "dsps_dotprod_f32_arp4 (esp-dsp) via esp_mel_dotprod_f32 / esp_mel_dotprod_step during audio front-end feature extraction",
+        "connectivity": "never established — abort occurred before app_mqtt_init"
+      },
+      "notes": [
+        "The crash is in esp-dsp's hand-written RISC-V assembly (dsps_dotprod_f32_arp4.S) reached from c_speech_features, i.e. inside the audio framework's modelling/wake-word pipeline, not in product code. It may be an emulator gap for esp32s31 vector/DSP instructions, but from the log alone the device visibly aborts, which by the rules is a failure.",
+        "Earlier non-fatal lines seen and NOT counted as failures on their own: sdmmc_init_ocr send_op_cond 0x107 (no SD card present), sccb_i2c transmit failures then 'ov3660: Detected Camera sensor PID=0x3660', 'W i2s_common: GPIO 5/4 is not usable', 'W gpio: conflict found for GPIO[7]'.",
+        "No feature of the spec could be exercised: the console REPL was never reached, so no functional requirement was confirmed or refuted on this device."
+      ],
+      "suggestedFix": "Make the second boot get past the audio front-end: the fault is an illegal/misaligned instruction in esp-dsp's dsps_dotprod_f32_arp4 called from esp_mel_dotprod_step. Select an esp-dsp implementation path that does not use the ARP4/PIE vector assembly for this target (e.g. force the generic C/ANSI dot-product variant via the esp-dsp Kconfig/source selection) or disable the hardware PIE acceleration for esp32s31, and only then register the voice vocabulary, so that app_audio_init completes and the rest of the boot (display, web, MQTT, app_logic console) can be reached and tested."
+    }
+  }
+}
