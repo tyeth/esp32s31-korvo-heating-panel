@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:40:17.379Z",
+  "updatedAt": "2026-11-07T14:43:53.664Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -52,7 +52,7 @@
       },
       {
         "id": "f10",
-        "text": "Permit-join button — one tap publishes the zigbee2mqtt coordinator's permit_join request to pair a new TRV",
+        "text": "Permit-join button — one tap publishes {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join to pair a new TRV",
         "status": "draft",
         "source": "ai"
       },
@@ -100,13 +100,13 @@
       },
       {
         "id": "f15",
-        "text": "Reading topics: each room's TRV state comes from zigbee2mqtt/<trv>/ (current_heating_setpoint, local_temperature, running_state); the room air sensor from zigbee2mqtt/<sensor>/temperature — all topic names set on the web page",
+        "text": "Reads each TRV's single zigbee2mqtt state topic (zigbee2mqtt/0xa4c1383b5b3d7063, …52a667eedf, …29e3ee602b, …29aa5a7009) and picks the fields current_heating_setpoint, local_temperature and the mode field out of the one JSON payload; the room air sensor topic is set on the web page",
         "status": "draft",
         "source": "ai"
       },
       {
         "id": "f16",
-        "text": "If a TRV reports running_state=off (frost mode) the room shows \"valve off\" and the next setpoint command also turns it back to heat",
+        "text": "If a TRV reports running_state=off (frost mode) the room shows \"valve off\" and the next setpoint command also turns it back to heat — setpoint is sent as {\"current_heating_setpoint\": \"19.5\"} on the TRV's state topic, mode via {\"system_mode\": \"heat\"}",
         "status": "draft",
         "source": "ai"
       },
