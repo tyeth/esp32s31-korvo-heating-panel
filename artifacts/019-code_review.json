@@ -1,0 +1,184 @@
+{
+  "agent": "code_review",
+  "seq": 19,
+  "savedAt": "2026-11-07T16:08:42.858Z",
+  "report": {
+    "result": "pass",
+    "summary": "Both previous criticals are fixed and verified (the CA pointer can no longer be NULL, mqtt_load_config() runs again before the STA/AP decision, and the pinned CA is reachable and applied with a client restart); the only remaining items are the owner-accepted TLS name-check skip plus two info-level notes.",
+    "report": {
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (vocabulary registered between clear() and update())",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init: mqtt_load_config() -> STA config/start, or onboarding AP; MQTT client starts on GOT_IP",
+          "zc_behaviors_init",
+          "diagnostics_clock_init (SNTP, TZ Europe/London)",
+          "app_logic_init (heating_load_targets, 3 esp_timers, SET/BOOT bindings, 'heating' console command)",
+          "app_console_init (REPL on UART)"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup (guided)"
+        ],
+        "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} (qos1, retain 0) to zigbee2mqtt/<TRV>; publish {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe each TRV state topic and each room air-sensor topic on every session; retained status zerocode/<mac12>/status with last-will 'offline'. HTTP: /settings (GET form, POST apply), /api/state, /api/set.",
+        "expectedLogPatterns": [
+          "app_mqtt: \"no broker saved — default mqtts://homeassistant.gdenu.fi:8123\" on a fresh panel",
+          "app_mqtt: \"MQTT connecting to mqtts://… (TLS, certificate name check skipped)\"",
+          "app_mqtt: \"Wi-Fi got IP\", \"MQTT connected\", \"MQTT disconnected — retrying in 30 s\", \"Wi-Fi reconnect attempt\"",
+          "app_mqtt: \"SoftAP 'Korvo-Heating-XXXX' (password 'heatpanel') — open http://korvo-heating.local/settings\" while no Wi-Fi is stored",
+          "heating_voice: \"N of N phrases registered\"",
+          "app_audio: \"button press — listening for a command\" / \"wake word detected — listening for a command\" / \"command phrase <id>\" / \"no command heard — sleeping until next trigger\"",
+          "heating: \"room table loaded (…)\", \"subscribed to 4 room topics\", \"<room> -> <x.y>  <topic>\"",
+          "heating_ui: \"dashboard up (4 rooms)\"",
+          "heating_panel: \"front buttons bound (1) — click = push-to-talk, double click = dismiss, hold 10000 ms = factory reset\", \"heating panel logic up\"",
+          "app_main: \"ZeroCode AI firmware started\""
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip — off / dim white connecting / green online / amber listening / red flash on refusal",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button — single click push-to-talk, long press permit-join (or reopen the onboarding AP when no Wi-Fi is stored)",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click = push-to-talk, double click = dismiss banner, 1 s hold arms a 10 s factory reset (release cancels)",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C bus for the GT1151 touch panel (board-owned)",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD (display framework)",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic (board/periph owned)",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "Factory reset remains a 10 s hold of the single front button rather than the spec's SET+MODE combination — a deviation the writer documented as unavoidable on this board; not a regression.",
+          "TLS for the broker skips the certificate name check (skip_cert_common_name_check) for every mqtts/ssl/:8883 URI, kept deliberately at the product owner's request; the chain is still verified and a pinned CA can now be supplied from the settings page.",
+          "A freshly flashed panel defaults to mqtts://homeassistant.gdenu.fi:8123 (owner's request) and needs only Wi-Fi to reach it.",
+          "The settings form's CA field is never pre-filled (the stored PEM is not echoed) and cannot be cleared from the page; the 4 KB fixed CA buffer is truncation-safe.",
+          "No new defects found in this round; both previous criticals are fixed at the root."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (lvgl_port_add_disp / lvgl_port_add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev; taps via LV_EVENT_PRESSED/RELEASED on the screen object",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet, app_audio_listen_once/stop for button windows)",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (STA + onboarding SoftAP, saved config loaded at boot)",
+            "part": "Wi-Fi"
+          },
+          {
+            "driver": "app_mqtt esp-mqtt over TLS; data handler from heating_mqtt.cpp",
+            "part": "MQTT broker"
+          }
+        ]
+      },
+      "filesReviewed": [
+        "artifacts/016-code_review.json",
+        "artifacts/017-code_writing.json",
+        "artifacts/018-firmware_compilation.json",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/components/app_mqtt/include/app_mqtt.h",
+        "firmware/managed_components/espressif__mqtt/include/mqtt_client.h"
+      ],
+      "findings": [
+        {
+          "area": "security",
+          "description": "For every TLS broker URI the client runs with skip_cert_common_name_check = true (the esp-mqtt header documents this as enabling MITM). Kept deliberately at the product owner's request; the chain is still verified and a pinned CA is now reachable from the settings page.",
+          "evidence": "app_mqtt.cpp:199-203 (skip_cert_common_name_check for every mqtts/ssl/:8883 URI, certificate = s_ca_pem when set); heating_web.cpp:223-225 page text; heating_web.cpp:318-333 app_mqtt_set_broker_ca(form_get(\"ca\")).",
+          "failureScenario": "Anyone on the path presenting any certificate from a public CA is accepted as the broker, because the name is not matched; a pinned CA (now enterable on the settings page) removes that exposure but is optional and not persisted.",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 199,
+          "severity": "warning",
+          "suggestedChange": "Persist the CA in NVS so a pinned household stays pinned across reboots, and consider offering a strict (name-checked) mode for brokers whose certificate actually matches the dialled host."
+        },
+        {
+          "area": "spec_alignment",
+          "description": "The factory reset is a 10 s hold of the single front button (adc_button_group handles[0]) rather than the spec's 'SET and MODE together for 10 s'. Documented by the writer as unobservable on this board; not a regression, and a tap can no longer schedule it.",
+          "evidence": "app_logic.cpp:373-376 (COMBO_ARM_MS registered on handles[0]); app_logic.cpp:247-258 on_set_arm; spec.json factoryReset.trigger.",
+          "failureScenario": "A user holding the front button for 10 s wipes Wi-Fi, broker and room topics with no second button confirming the intent.",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 375,
+          "severity": "info",
+          "suggestedChange": "Either accept and document the deviation in the product description, or gate the wipe behind a combination (e.g. with the volume key) if the button device can report it."
+        },
+        {
+          "area": "correctness",
+          "description": "The CA field is never pre-filled (the stored PEM is deliberately not echoed) and an empty submission cannot clear it, so a pinned CA can be replaced but not removed from the page.",
+          "evidence": "heating_web.cpp:223-225 (empty <textarea name=\"ca\">); heating_web.cpp:321-333 (`if (form_get(\"apass\")[0] || form_get(\"ca\")[0]) … if (form_get(\"ca\")[0]) app_mqtt_set_broker_ca(...)`).",
+          "failureScenario": "After pinning a CA the user moves the panel to a broker that needs the built-in pack: the stored CA stays in s_ca_buf until the next reboot (it is not in NVS), varying behaviour between a live edit and a power cycle.",
+          "file": "firmware/components/app_logic/heating_web.cpp",
+          "line": 321,
+          "severity": "info",
+          "suggestedChange": "Accept an explicit sentinel (e.g. '-') to clear the CA, as the username/password flow already does in mqtt-setup."
+        }
+      ],
+      "previousFindingsStatus": [
+        {
+          "evidence": "app_mqtt.cpp:45-49 `static char s_ca_buf[4096] = {0}; static char *s_ca_pem = s_ca_buf;` and :202 `if (s_ca_pem != NULL && s_ca_pem[0] != 0)` — no NULL dereference is possible.",
+          "finding": "critical — s_ca_pem dereferenced while NULL on any TLS connect",
+          "status": "fixed (verified)"
+        },
+        {
+          "evidence": "app_mqtt.cpp:658-661 `mqtt_load_config();` restored before the configured/AP decision; the default broker block :405-412 and app_mqtt_wifi_missing()/ap_start now act on the stored values.",
+          "finding": "critical — app_mqtt_init() never called mqtt_load_config(), so saved settings and the default broker were ignored at boot",
+          "status": "fixed (verified)"
+        },
+        {
+          "evidence": "heating_web.cpp:223-225 a CA textarea; heating_web.cpp:321-333 apass/ca edits rebuild the session via app_mqtt_set_broker(..., pass) and app_mqtt_set_broker_ca(); app_mqtt.cpp:481-500 set_broker_ca copies into the fixed buffer and restarts the client (stop/destroy + heating_broker_ready(false) + mqtt_start_client).",
+          "finding": "info — app_mqtt_set_broker_ca() freed a buffer a live session may hold and never applied the new anchor",
+          "status": "fixed (verified)"
+        },
+        {
+          "evidence": "app_mqtt.cpp:199-203 skip_cert_common_name_check = true for every TLS URI; heating_web.cpp:220-222 states the name is not verified while the chain is.",
+          "finding": "warning — blanket skip_cert_common_name_check weakens TLS fleet-wide",
+          "status": "accepted by owner (kept), re-raised as a warning with the pinned-CA path now reachable"
+        },
+        {
+          "evidence": "app_mqtt.cpp:145-150 HEATING_DEFAULT_BROKER_URI; heating_web.cpp:216-218 placeholder; report 017 records it as the owner's explicit request.",
+          "finding": "info — hardcoded household broker as firmware default",
+          "status": "accepted by owner (kept)"
+        },
+        {
+          "evidence": "No change since report 013; app_logic.cpp:375-376.",
+          "finding": "critical — factory reset is a single-button hold rather than SET+MODE",
+          "status": "not re-raised this round (documented deviation, no regression)"
+        }
+      ]
+    }
+  }
+}
