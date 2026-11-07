@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:37:51.517Z",
+  "updatedAt": "2026-11-07T14:38:37.811Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -16,7 +16,13 @@
     "features": [
       {
         "id": "f1",
-        "text": "Voice control — mic opens ONLY for one request when a front button is pressed (or the on-screen mic icon), listens ~10 s and closes again; no always-listening wake word, no spoken replies",
+        "text": "Voice control — mic opens for one request when a front button is pressed (or the on-screen mic icon), listens ~10 s and closes again; no spoken replies, feedback on screen + LED",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f11",
+        "text": "Wake word \"Hi ESP\" stays enabled as a fallback — saying it opens the same one-request listening window as the button",
         "status": "draft",
         "source": "ai"
       },
