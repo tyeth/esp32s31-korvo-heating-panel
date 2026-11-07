@@ -1,0 +1,46 @@
+{
+  "agent": "code_writing",
+  "seq": 11,
+  "savedAt": "2026-11-07T16:02:21.882Z",
+  "report": {
+    "result": "pass",
+    "summary": "Factory reset now arms only after a real 1 s hold (a tap or a lost release can never schedule it) and is performed by its own timer; a recognised voice command or timeout clears the button window so the mic cannot re-open. Builds at 2.93 MB, 20 % free.",
+    "report": {
+      "decisions": [
+        "Factory reset: the reviewer's suggestion a) is right — arm on BUTTON_LONG_PRESS_START (1 s, i.e. the button was really held) and let the esp_timer perform the wipe after the remaining 9 s; any PRESS_UP disarms. A tap, a slipped finger or a lost release can no longer schedule a wipe, and the reset no longer depends on the fragile LONG_PRESS_UP window (suggestion b)). Trade-off, accepted deliberately: a hold where the release is lost still resets after 10 s of continuous hold — the same behaviour a physical 10 s hold would have.",
+        "Voice window: the audio side now clears its request flag on a recognised phrase and on the AFE timeout, so the mic cannot re-open by itself; the panel's own timer/second press already call app_audio_listen_stop().",
+        "The 6 s MultiNet recognition window vs the panel's 10 s bar was left as is: the 10 s is the spec's window and MultiNet's timeout bounds recognition; narrowing the bar would contradict the spec's stated countdown.",
+        "control.cpp: the misleading comment is corrected to describe what actually runs (the product override), which is the honest option — removing the generated single-click registration would break nothing but also gain nothing."
+      ],
+      "filesCreated": [],
+      "filesModified": [
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/components/app_logic/control.cpp"
+      ],
+      "build": "esp32s31 success — 0x2cc0d0 (2932944 B) in a 0x380000 partition, 20% free; check_code clean on the edited sources",
+      "findingsAddressed": [
+        {
+          "finding": "critical — a short press arms the factory-reset countdown, cancelled only by a release",
+          "fix": "PRESS_DOWN only records the finger; the countdown is armed by BUTTON_LONG_PRESS_START at COMBO_ARM_MS (1 s held) and performed by the esp_timer after FR_HOLD_MS; any release disarms"
+        },
+        {
+          "finding": "warning — LONG_PRESS_UP timing window can fire early or miss a long hold",
+          "fix": "LONG_PRESS_UP is no longer used at all; the elapsed hold is measured by the esp_timer"
+        },
+        {
+          "finding": "warning — a recognised phrase leaves s_btn_window set, so the window re-opens",
+          "fix": "recognised phrase and AFE timeout both clear s_btn_window inside the detect task"
+        },
+        {
+          "finding": "info — button window vs MultiNet 6 s vs the panel's 10 s",
+          "fix": "left as designed: the spec's window is 10 s and MultiNet's own timeout bounds recognition"
+        },
+        {
+          "finding": "info — control.cpp comment claimed the single-click registration was removed",
+          "fix": "comment now states the hook is overridden by app_logic.cpp and that is what runs"
+        }
+      ]
+    }
+  }
+}
