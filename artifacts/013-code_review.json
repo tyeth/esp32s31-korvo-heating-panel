@@ -1,0 +1,165 @@
+{
+  "agent": "code_review",
+  "seq": 13,
+  "savedAt": "2026-11-07T16:02:59.991Z",
+  "report": {
+    "result": "fail",
+    "summary": "The factory-reset arming and the re-opening voice window are fixed and verified (no press can schedule a wipe, LONG_PRESS_UP is gone, a matched phrase/timeout clears the flag), but the reset is still not the spec's factory reset: on this board it is a 10 s hold of the settings/– button, reachable by any user of the panel, with no MODE, no volume combination and no second confirmation.",
+    "report": {
+      "filesReviewed": [
+        "artifacts/010-code_review.json",
+        "artifacts/011-code_writing.json",
+        "artifacts/012-firmware_compilation.json",
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/components/app_logic/control.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/heating_voice.cpp",
+        "firmware/components/app_mqtt/app_mqtt.cpp"
+      ],
+      "previousFindingsStatus": [
+        {
+          "finding": "critical — a short press arms the factory-reset countdown, cancelled only by a release",
+          "status": "fixed (verified)",
+          "evidence": "app_logic.cpp:239-245 on_set_press now only sets s_combo.set_down; the timer is armed exclusively by on_set_arm (app_logic.cpp:247-258), registered on BUTTON_LONG_PRESS_START with COMBO_ARM_MS = 1000 (app_logic.cpp:375-376); on_set_release :260-266 stops it. A tap can no longer schedule a wipe."
+        },
+        {
+          "finding": "warning — LONG_PRESS_UP window can fire early or miss a long hold",
+          "status": "fixed (verified)",
+          "evidence": "The BUTTON_LONG_PRESS_UP registration and on_set_long_hold are removed; the wipe is performed by s_fr_timer -> factory_reset_cb (app_logic.cpp:214-221, armed :254-256)."
+        },
+        {
+          "finding": "warning — a recognised phrase left s_btn_window set, so the window re-opened",
+          "status": "fixed (verified)",
+          "evidence": "app_audio.cpp:190-192 clears s_btn_window before audio_apply_command on ESP_MN_STATE_DETECTED, :194-197 on ESP_MN_STATE_TIMEOUT; the button branch :164-170 only opens when !listening."
+        },
+        {
+          "finding": "info — control.cpp comment claimed the single-click registration was removed",
+          "status": "fixed",
+          "evidence": "control.cpp:119-122 now states the weak hook is overridden in app_logic.cpp and that this is what runs."
+        },
+        {
+          "finding": "info — 6 s MultiNet window vs the 10 s panel bar",
+          "status": "accepted by the writer, unchanged",
+          "evidence": "app_audio.cpp:216 s_mn->create(mn_name, 6000); app_logic.cpp LISTEN_MS 10000 bar."
+        }
+      ],
+      "findings": [
+        {
+          "severity": "critical",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 375,
+          "description": "The factory reset is not the documented one. The spec's trigger is 'hold the front SET and MODE buttons together for 10 s', i.e. a deliberate two-finger combination that a normal user cannot hit while operating the panel; the firmware now resets on a 10 s hold of the single ADC-group button handle — the same button whose short click is push-to-talk and whose other members are the volume keys. The writer's report acknowledges this is 'unobservable on this board' instead of resolving it, so a spec-mandated safety behaviour is implemented as an easier-to-trigger gesture than the spec allows.",
+          "failureScenario": "A user resting a finger on the panel's front button while reading the screen, or a child holding it down, holds it for 10 s: on_set_arm (app_logic.cpp:247) starts the countdown, factory_reset_cb runs, heating_factory_reset() erases NVS and reboots — Wi-Fi, broker and the four room topics are gone and the panel drops to the onboarding AP. No combination, no confirmation, and the only visible warning is a banner that the panel's dim screen may hide.",
+          "evidence": "app_logic.cpp:373-376 (`button_event_args_t lp = {}; lp.long_press.press_time = COMBO_ARM_MS; iot_button_register_cb(s_combo.set, BUTTON_LONG_PRESS_START, &lp, on_set_arm, NULL);`) on handles[0] only (:362); app_logic.cpp:247-258 on_set_arm, :214-221 factory_reset_cb -> heating_factory_reset (heating.cpp:395-401 nvs_flash_erase + esp_restart); spec.json factoryReset.trigger 'Hold the front SET and MODE buttons together for 10 s'.",
+          "suggestedChange": "Keep the wipe behind a combination the spec allows — e.g. hold SET (handles[0]) while VOLUME_UP (the group's fourth handle, which reports presses through the same iot_button adc_multi device) is also down, or require the SET hold to be confirmed by a second gesture within the countdown — and record the deviation explicitly in the product description if a single-button hold is the only option on this board."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 250,
+          "description": "The 'START' event can be delivered more than once for one press while s_combo.set_down is still true, and each delivery re-arms: iot_button dispatches BUTTON_LONG_PRESS_START per `s_combo.set_down` state, so any repeat (a second registered START callback, or a re-entry while the handle stays down) restarts the FR_HOLD_MS timer, extending the hold beyond the spec's 10 s and firing the wipe a second time relative to the press.",
+          "failureScenario": "Hold the button: on_set_arm fires at 1 s and starts a 10 s timer. If the long-press event is delivered again during the same press (e.g. iot_button's hold/repeat handling keeps the device in the long-press state and the callback re-runs), esp_timer_stop/start_once pushes the wipe to 11 s, 12 s … so a user holding exactly 10 s (as the banner says) sees no reset, contradicts 'Reset in 10 s', and the reset eventually lands at an unpredictable time.",
+          "evidence": "app_logic.cpp:247-258 on_set_arm (`if (!s_combo.set_down) return; heating_ui_banner(...); esp_timer_stop(s_fr_timer); esp_timer_start_once(...)`); iot_button.c:154-171 LONG_PRESS_START dispatch loop with callbacks matching press_time.",
+          "suggestedChange": "Arm once per press: guard on_set_arm with a flag cleared in on_set_press/on_set_release so a repeat event cannot restart the countdown, and make the countdown length equal FR_HOLD_MS − COMBO_ARM_MS so the total hold is the advertised 10 s."
+        }
+      ],
+      "deviceBehavior": {
+        "gpios": [
+          {
+            "pin": "37",
+            "function": "WS2812 status strip (off / dim white / green / amber / red flash)"
+          },
+          {
+            "pin": "61",
+            "function": "BOOT button — click push-to-talk, long press permit-join or reopen onboarding AP"
+          },
+          {
+            "pin": "ADC oneshot channel",
+            "function": "adc_button_group, one event handle: click = push-to-talk, double click = dismiss, hold 1 s arms a 10 s factory reset, release cancels"
+          },
+          {
+            "pin": "0/1",
+            "function": "I2C for GT1151 touch (board-owned)"
+          },
+          {
+            "pin": "40/43/44/45",
+            "function": "on-board RGB LCD (display framework)"
+          },
+          {
+            "pin": "3/4/5/6/7",
+            "function": "ES8389 codec + I2S voice mic"
+          }
+        ],
+        "peripherals": [
+          {
+            "part": "RGB LCD + LVGL",
+            "driver": "app_display (lvgl_port_add_disp / add_touch)"
+          },
+          {
+            "part": "GT1151 touch",
+            "driver": "app_display indev, taps via LV_EVENT_PRESSED/RELEASED on the screen"
+          },
+          {
+            "part": "ES8389 codec",
+            "driver": "app_driver tone generator"
+          },
+          {
+            "part": "esp-sr AFE + MultiNet",
+            "driver": "app_audio with app_audio_listen_once/stop for button windows"
+          },
+          {
+            "part": "WS2812 strip",
+            "driver": "app_driver status_board_strip"
+          },
+          {
+            "part": "Wi-Fi STA + onboarding SoftAP",
+            "driver": "app_mqtt"
+          },
+          {
+            "part": "MQTT",
+            "driver": "app_mqtt + heating_mqtt.cpp data handler"
+          }
+        ],
+        "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV>; {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe each TRV and air-sensor topic per session; retained status zerocode/<mac>/status with last-will offline. HTTP /settings, /api/state, /api/set.",
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (vocabulary registered between clear() and update())",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (STA or onboarding AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init (heating_load_targets, timers, button bindings, console cmd)",
+          "app_console_init"
+        ],
+        "expectedLogPatterns": [
+          "heating_voice: \"N of N phrases registered\"",
+          "app_audio: \"button press — listening for a command\", \"command phrase <id>\", \"no command heard — sleeping until next trigger\"",
+          "app_mqtt: \"SoftAP 'Korvo-Heating-XXXX' (password 'heatpanel') — open http://korvo-heating.local/settings\", \"Wi-Fi got IP\", \"MQTT connected\"",
+          "heating: \"subscribed to 4 room topics\", \"<room> -> <x.y>  <topic>\"",
+          "heating_ui: \"dashboard up (4 rooms)\"",
+          "heating_panel: \"front buttons bound (1) — click = push-to-talk, double click = dismiss, hold 10000 ms = factory reset\", \"front button held for 10000 ms — wiping settings\""
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "notes": [
+          "Factory reset is a single-button 10 s hold (documented deviation), not the spec's SET+MODE combination.",
+          "No press alone can schedule a wipe any more; the countdown starts at 1 s of hold.",
+          "A matched voice command and the AFE timeout both clear the button flag, so the mic cannot re-open by itself."
+        ]
+      }
+    }
+  }
+}
