@@ -1,4 +1,5 @@
 #include "app_audio.h"
+#include "app_dsp_shim.h"
 #include "app_driver.h"
 #include "app_config.h"
 #include "app_logic.h"
@@ -203,6 +204,12 @@ static void audio_detect_task(void *arg)
 
 esp_err_t app_audio_init(void)
 {
+    /* The generic DSP kernel the prebuilt front end calls must be linked or the
+     * first audio frame traps in esp-dsp's assembly (see app_dsp_shim): name it
+     * here so the dependency is real, and say which one this image got. */
+    ESP_LOGI(TAG, "DSP dot product: generic kernel linked (%s)",
+             app_dsp_dotprod_kernel());
+
     s_handle = app_driver_register_solution("audio", audio_driver_cb, NULL);
 
     /* Capture hardware first — AFE has nothing to read without it. */

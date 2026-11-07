@@ -5,9 +5,11 @@
 # the generated implementation is compiled against, and it cannot see esp-sr's
 # WakeNet/MultiNet headers or esp_srmodel_init() without the dependency below.
 #
-# app_dsp_shim comes FIRST: it provides the generic dsps_dotprod_f32_arp4 the
-# prebuilt voice libraries call (esp-dsp's assembly version faults on this
-# target), and being listed first is what makes the linker prefer it.
+# app_dsp_shim provides the generic dsps_dotprod_f32_arp4 the prebuilt voice
+# libraries call (esp-dsp's assembly version faults on this target). It is
+# linked WHOLE_ARCHIVE so that definition is in the image whatever order the
+# archives are searched in, and app_audio.cpp references it below, so the
+# dependency is real rather than a declaration only.
 #
 # app_logic is the product's vocabulary: app_audio.cpp calls its
 # heating_voice_register() / heating_voice_apply_command() /

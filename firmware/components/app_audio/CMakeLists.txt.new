@@ -1,0 +1,12 @@
+# The voice framework and the generic DSP kernel it must link against.
+#
+# app_dsp_shim is a real dependency, not only a link-order hint: the probe below
+# references the symbol the prebuilt esp-sr front end calls, so the archive is
+# pulled in by the reference. app_dsp_shim is also linked WHOLE_ARCHIVE, which
+# makes its definition win over esp-dsp's faulting assembly regardless of the
+# order the archives are searched in.
+idf_component_register(
+    SRCS "app_audio.cpp" "dsp_probe.c"
+    INCLUDE_DIRS "include"
+    PRIV_REQUIRES app_dsp_shim espressif__esp-sr app_driver app_config app_logic esp_driver_i2s
+)
