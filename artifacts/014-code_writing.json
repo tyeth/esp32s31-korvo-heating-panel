@@ -1,0 +1,26 @@
+{
+  "agent": "code_writing",
+  "seq": 14,
+  "savedAt": "2026-11-07T16:05:57.540Z",
+  "report": {
+    "result": "pass",
+    "summary": "The panel now reaches the household broker over TLS at mqtts://homeassistant.gdenu.fi:8123 (used as the default when none is saved), with the certificate name check skipped because the valid certificate is issued for a different host — the chain is still verified and an optional CA can be pinned. Builds at 2.93 MB, 20 % free.",
+    "decisions": [
+      "Used the narrowest switch that satisfies the constraint: skip_cert_common_name_check on a TLS session. The certificate chain is still verified against the built-in pack (or a CA supplied at runtime), so encryption and server authentication stay on; only the hostname match — which can never succeed for this box — is skipped.",
+      "The rule applies to every TLS URI (mqtts://, ssl://, mqtt:// on 8883), so editing the broker later keeps the same behaviour; plain mqtt:// is untouched.",
+      "Default broker is now mqtts://homeassistant.gdenu.fi:8123 when nothing is stored, so a freshly flashed panel needs only Wi-Fi to reach the household broker; the settings page and its TLS hint carry the same default.",
+      "Added an optional runtime CA (app_mqtt_set_broker_ca) so a household that later wants strict chain pinning can supply it from the settings page; with no CA the ESP-IDF certificate pack authenticates the chain."
+    ],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp",
+      "firmware/components/app_mqtt/include/app_mqtt.h",
+      "firmware/components/app_logic/heating_web.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cc2d0 (2933456 B) in a 0x380000 partition, 20% free; check_code clean",
+    "filesCreated": [],
+    "openQuestions": [
+      "Home Assistant's add-on terminates TLS for its own web UI on 8123; whether the Mosquitto add-on also accepts MQTT-over-TLS on that same port is a server-side fact I cannot verify from here. If it does not, point the broker URI at whatever port the household's broker really listens on (still mqtts://) — the code path does not change.",
+      "Broker username/password (and the optional CA PEM) are still entered on the settings page apart from the URI; no credential is baked into the firmware."
+    ]
+  }
+}
