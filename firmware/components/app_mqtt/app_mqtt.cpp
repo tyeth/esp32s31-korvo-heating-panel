@@ -144,6 +144,12 @@ void app_mqtt_set_online(bool online)
 #define HEATING_DEFAULT_BROKER_URI "mqtts://homeassistant.gdenu.fi:8123"
 #define HEATING_DEFAULT_BROKER_USER ""
 
+/* The home network this panel is made for. Used only when nothing is stored
+ * (a fresh flash, or right after a factory reset); a network saved from the
+ * settings page or the console replaces it. */
+#define HEATING_DEFAULT_WIFI_SSID "free4all"
+#define HEATING_DEFAULT_WIFI_PASS "password"
+
 /** True for a URI that runs mqtt over TLS (mqtts:// , or mqtt:// on 8883). */
 static bool mqtt_uri_is_tls(const char *uri)
 {
@@ -408,6 +414,13 @@ static void mqtt_load_config(void)
         strlcpy(s_ca_buf, ca, sizeof(s_ca_buf));
     }
     nvs_close(h);
+    /* The home network, for a panel nobody has set up yet; the settings page
+     * or console replaces it. */
+    if (s_ssid[0] == 0) {
+        strlcpy(s_ssid, HEATING_DEFAULT_WIFI_SSID, sizeof(s_ssid));
+        strlcpy(s_pass, HEATING_DEFAULT_WIFI_PASS, sizeof(s_pass));
+        ESP_LOGI(TAG, "no Wi-Fi saved — default '%s'", s_ssid);
+    }
     /* The household's own broker, as the default for a panel nobody has set up
      * yet; the settings page overrides it. */
     if (s_uri[0] == 0) {
@@ -679,8 +692,9 @@ esp_err_t app_mqtt_init(void)
     mqtt_load_config();
 
     /* Until the radio exists the settings page cannot be reached, so this is
-     * where the very first connection starts. Never aborts boot: an
-     * unconfigured panel still shows its dashboard and takes the console. */
+     * where the very first connection starts. Never aborts boot: if the default
+     * network is not there, the panel still shows its dashboard, keeps the
+     * console, and the AP can be opened with a BOOT long press. */
     if (s_ssid[0] == 0 || s_uri[0] == 0) {
         ESP_LOGW(TAG, "MQTT not configured — the dashboard runs, but the settings page and "
                       "the TRVs wait for Wi-Fi; set it: mqtt-wifi <ssid> <pass>, then "
