@@ -1,0 +1,92 @@
+{
+  "agent": "functional_testing",
+  "seq": 27,
+  "savedAt": "2026-11-07T16:55:32.419Z",
+  "report": {
+    "result": "fail",
+    "summary": "The esp-dsp boot crash is genuinely gone (audio init completes with the generic kernel and 21 phrases registered), but the firmware now aborts a few lines later in lvgl_port_add_disp: app_display passes an RGB panel to the generic display-add API, which asserts io_handle != NULL — and an RGB panel has no io_handle. Boot still never reaches the dashboard, web page, MQTT or console.",
+    "report": {
+      "tests": [
+        {
+          "name": "Previously failing scenario: crash in dsps_dotprod_f32_arp4 during wake-word feature extraction",
+          "category": "voice",
+          "result": "pass",
+          "details": "The faulting assembly kernel is no longer in the image: app_audio logs the generic kernel and the voice framework comes up, the vocabulary registers, and AFE/WakeNet init completes with no illegal-instruction trap. This failure is fixed.",
+          "evidence": "I (664) app_audio: DSP dot product: generic kernel linked (generic C (app_dsp_shim)) / I (1004) heating_voice: 21 of 21 phrases registered / 21 active speech commands / I (1064) app_audio: Voice framework initialized"
+        },
+        {
+          "name": "Boot stability — no panic / abort / reset",
+          "category": "stability",
+          "result": "fail",
+          "details": "Boot now gets past audio but aborts inside display init, on hart0, ~1 ms after 'Display setup started'. The assert is `assert(disp_cfg->io_handle != NULL)` at esp_lvgl_port_disp.c:120 inside lvgl_port_add_disp(), reached from app_display.cpp:108. The board's display is an RGB panel (esp32_s31_korvo_1 board_devices.yaml: display_lcd, sub_type rgb, generic_rgb) whose dev_display_lcd_sub_rgb_init sets lcd_handles->io_handle = NULL — an RGB panel has no panel IO. The generic lvgl_port_add_disp() path requires one; the RGB driver needs lvgl_port_add_disp_rgb() with a lvgl_port_display_rgb_cfg_t (available in the same lvgl port, esp_lvgl_port_disp.c:~296). App_display's block deliberately sets buff_dma/swap_bytes off for non-serial panels but does not branch on RGB for the add call. Net effect: the emulator exits (code 1) and nothing after app_audio_init runs — no 'dashboard up (4 rooms)', no heating_web_install/app_webui_init, no app_mqtt_init, no diagnostics_clock_init, no app_logic_init ('heating panel logic up'), no app_console_init.",
+          "evidence": "[WARN machine] Firmware abort on hart0: 'assert failed: 0x4008a630' / Firmware abort: assert failed: 0x4008a630 / #1 __assert_func () at components/esp_libc/src/assert.c:40 / #5 lvgl_port_add_disp () at managed_components/espressif__esp_lvgl_port/src/lvgl9/esp_lvgl_port_disp.c:120 / #8 display_setup_task () at components/app_display/app_display.cpp:108 / [host] emulator stopped: esp-emu exited on its own (exit code 1)"
+        },
+        {
+          "name": "Regression check — driver / model init unchanged",
+          "category": "boot",
+          "result": "pass",
+          "details": "Board manager, codec, LED strip, GT1151 touch, ADC/boot buttons, camera, PSRAM and the srmodels partition all come up as in the previous build; the SD-card mount error and the first SCCB probe error are unchanged board conditions (no card, wrong I2C address first) with no wrong behaviour. No new warnings in the boot path up to the abort.",
+          "evidence": "I (684) AFE: AFE Pipeline: [input] -> |VAD(WebRTC)| -> |WakeNet(wn9_hiesp,)| / I (664) BOARD_MANAGER: Board manager initialized"
+        },
+        {
+          "name": "Console REPL (help, uptime, chip, version, heap) and 'heating set <room> <degC>'",
+          "category": "console",
+          "result": "unverified",
+          "details": "app_console_init / app_logic_init are behind the display abort, so the REPL never appears and no command could be sent."
+        },
+        {
+          "name": "MQTT setpoint publish, permit-join, TRV/air-sensor parsing, 'already set' guard (f4/f15/f16/f10/f17)",
+          "category": "connectivity",
+          "result": "unverified",
+          "details": "app_mqtt_init never ran; also needs broker peers which do not exist on the emulator."
+        },
+        {
+          "name": "Dashboard 2x2 room cards, touch selection, +/- 0.5 °C, overlays, boot straight to dashboard (f2/f3/f8/f19/f13)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "Display init currently aborts before the UI exists; rendering and touch are also not observable from the serial log."
+        },
+        {
+          "name": "Status LED colours (f6/f12)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "LED strip driver binds, but colour is a physical observation."
+        },
+        {
+          "name": "Push-to-talk button / wake word listening window / spoken commands (f1/f11/f9)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "Needs a real button press or microphone audio."
+        },
+        {
+          "name": "SoftAP + mDNS onboarding, /settings page, persisted CA (f5)",
+          "category": "commissioning",
+          "result": "unverified",
+          "details": "app_webui_init / app_mqtt_init never ran; onboarding through a browser is deferred to the testing expert on real hardware."
+        },
+        {
+          "name": "Factory reset, saved targets surviving a power blip (f13)",
+          "category": "stability",
+          "result": "unverified",
+          "details": "Boot aborts before app_logic_init; button hold is physical and persistence could not be observed."
+        }
+      ],
+      "deviceInfo": {
+        "chip": "esp32s31",
+        "board": "esp32-s31-korvo-1",
+        "emulator": "ESP32 series emulator v0.50.0, user-mode network backend",
+        "appVersion": "1.0.0",
+        "firmwareSize": "2934624 B",
+        "connectivity": "never established — boot aborts in display init before MQTT/Wi-Fi",
+        "panics": "1 (assert in lvgl_port_add_disp), emulator exited"
+      },
+      "notes": [
+        "Two consecutive builds have now died at different points before any product behaviour is visible: first the esp-dsp dot product, now display init. The display abort is newly exposed by the audio fix, not a code change in app_display in this round.",
+        "Display init runs in its own task (xTaskCreate display_setup_task) with a comment saying it 'must not take app_main down with it', but a failed assert still aborts the whole chip — the isolation only covers failure to return, not an assert.",
+        "Non-fatal lines observed, not counted on their own: sdmmc send_op_cond 0x107 (no SD card), sccb_i2c transmit failure then 'ov3660: Detected Camera sensor PID=0x3660' (unchanged from the previous boot).",
+        "artifacts/device.log now holds this build's boot (two 'Display setup started' lines appear because app_display_init is called twice; both precede the same abort)."
+      ],
+      "suggestedFix": "In firmware/components/app_display/app_display.cpp, pick the add call by panel sub-type: for ESP_BOARD_DEVICE_LCD_SUB_TYPE_RGB (this board's panel) call lvgl_port_add_disp_rgb(&board_disp_cfg, &rgb_cfg) with a lvgl_port_display_rgb_cfg_t (bb_mode as needed) instead of lvgl_port_add_disp(), or guard the generic call on board_lcd_h->io_handle != NULL and fall back to the RGB API; also call app_display_init() only once. With that, display init should log the panel and 'Display initialized' and boot can continue to the web page, MQTT and the console, which is where the functional checks can actually run."
+    }
+  }
+}
