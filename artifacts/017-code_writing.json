@@ -1,0 +1,43 @@
+{
+  "agent": "code_writing",
+  "seq": 17,
+  "savedAt": "2026-11-07T16:08:05.122Z",
+  "report": {
+    "result": "pass",
+    "summary": "Fixed the two TLS regressions the review found: the CA lookup can no longer dereference NULL, and app_mqtt_init() loads the saved settings (and the household broker default) again — plus the optional pinned CA is now actually reachable from the settings page. Builds at 2.93 MB, 20 % free.",
+    "decisions": [
+      "Both criticals were real consequences of the TLS patch: the CA pointer started NULL, and the config-load call was lost when the init block was rewritten. Fixed at the root (fixed buffer + NULL-safe check; mqtt_load_config() restored before the configured/AP decision).",
+      "Kept the TLS name-check skip as the user explicitly asked for it (their broker presents a valid certificate for a different hostname), but made the mitigation reachable: an optional broker root CA on the settings page, applied with a client restart so it is live, and documented on the page that the name is not verified while the chain is.",
+      "Kept the household broker (mqtts://homeassistant.gdenu.fi:8123) as the default for a panel nobody has set up — that was the user's explicit request; the settings page still overrides it and the form is the documented setup path.",
+      "Added a CA field to the settings form and enlarged its POST buffer accordingly; password-only or CA-only edits now rebuild the session too, since they used to be silently ignored when the URI was unchanged."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp",
+      "firmware/components/app_logic/heating_web.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cc640 (2934336 B) in a 0x380000 partition, 20% free; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "critical — s_ca_pem dereferenced while NULL (panic on any TLS connect)",
+        "fix": "s_ca_pem points at a fixed zero-filled 4 KB buffer and the check is `s_ca_pem != NULL && s_ca_pem[0] != 0`"
+      },
+      {
+        "finding": "critical — app_mqtt_init() never calls mqtt_load_config(), so saved settings and the default broker are ignored",
+        "fix": "mqtt_load_config() restored at the top of app_mqtt_init(), before the missing/configured checks, mqtt_wifi_start() and the AP start"
+      },
+      {
+        "finding": "warning — blanket skip_cert_common_name_check weakens TLS fleet-wide",
+        "fix": "kept as explicitly requested by the product owner; MITM exposure narrowed where possible: optional pinned CA on the settings page, applied with a client restart, and the page states that only the name is skipped"
+      },
+      {
+        "finding": "info — hardcoded household broker as firmware default",
+        "fix": "kept as the owner's explicit default for an unconfigured panel; the settings page overrides it"
+      },
+      {
+        "finding": "info — app_mqtt_set_broker_ca() frees a buffer a live session may hold and never applies",
+        "fix": "fixed buffer (no free), copies the PEM and restarts the client so the new anchor takes effect"
+      }
+    ]
+  }
+}
