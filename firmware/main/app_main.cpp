@@ -82,8 +82,9 @@ extern "C" void app_main(void)
         }
     }
 
-    /* The dashboard on the board's LCD (the display framework brings LVGL and
-     * the touch up; this replaces its empty screen with the room cards). */
+    /* The dashboard on the board's LCD. app_display_init() starts LVGL, the
+     * panel and the touch in its own task; heating_ui_init() waits for that
+     * and builds the room cards on it. One display init, one dashboard. */
     ESP_ERROR_CHECK(app_display_init());
     esp_err_t ui_err = heating_ui_init();
     if (ui_err != ESP_OK) {
