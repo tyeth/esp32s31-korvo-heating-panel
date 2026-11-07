@@ -18,6 +18,7 @@ app_audio                                     see text
 app_console                                   see text
 app_display                                   see text
 app_driver                                    see text
+app_dsp_shim                                  see text
 app_logic                                     see text
 app_mqtt                                      see text
 app_update                      e9da155a      Apache-2.0
@@ -9247,6 +9248,9 @@ app_console: Apache-2.0
 app_driver: Apache-2.0
   2026 Espressif Systems (Shanghai) CO LTD
 
+app_dsp_shim: Apache-2.0
+  2026 Espressif Systems (Shanghai) CO LTD
+
 app_logic: Apache-2.0
   2026 Espressif Systems (Shanghai) CO LTD
 
@@ -9373,6 +9377,7 @@ app_audio: the product's own code
 app_console: the product's own code
 app_display: the product's own code
 app_driver: the product's own code
+app_dsp_shim: the product's own code
 app_logic: the product's own code
 app_mqtt: the product's own code
 app_update: part of ESP-IDF
