@@ -345,11 +345,13 @@ static void mqtt_wifi_start(void)
     strlcpy((char *)wc.sta.password, s_pass, sizeof(wc.sta.password));
     if (s_wifi_started) {
         /* The radio is already up (brought up by the onboarding SoftAP):
-         * configure the station on the live interface and join. */
-        esp_wifi_set_config(WIFI_IF_STA, &wc);
+         * configure the station on the live interface. The join itself is left
+         * to STA_START, which the radio raises for this interface — see the
+         * net task; driving esp_wifi_connect() from here as well makes the
+         * driver emit its own management operations, and on this target that is
+         * where the station start has faulted. */
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
         s_sta_configured = true;
-        esp_wifi_disconnect();
-        esp_wifi_connect();
         return;
     }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -442,15 +444,18 @@ void app_mqtt_ap_start(void)
     ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
 
     if (!s_wifi_started) {
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+        /* The radio comes up as an access point only. A station configured on
+         * an APSTA interface at the same instant cannot come up cleanly on this
+         * target (the driver faults in its station start); the station is
+         * joined the moment the panel is commissioned, by starting the radio
+         * again in station mode — see app_mqtt_set_wifi(). */
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
         ESP_ERROR_CHECK(esp_wifi_start());
         s_wifi_started = true;
-        /* Radio up, station still blank: a saved network is applied by
-         * mqtt_wifi_start() on the live interface. */
     } else {
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     }
 
     if (s_ap_timer == NULL) {
@@ -526,10 +531,18 @@ esp_err_t app_mqtt_set_wifi(const char *ssid, const char *password)
     strlcpy(s_pass, password, sizeof(s_pass));
     /* Credentials stored: the onboarding link has done its job. */
     if (s_ap_up) ap_stop();
-    /* Whether the radio was up (brought up by the SoftAP) or not, the station
-     * is configured — on the live interface — here, so a panel commissioned
-     * over its own access point actually joins the home network. */
+    /* Whether the radio was up as the onboarding AP or not, the station is
+     * configured here and started from this task — never from the event-loop
+     * dispatch — so a panel commissioned over its own access point joins the
+     * home network with a clean station start. */
     s_sta_configured = false;
+    bool was_up = s_wifi_started;
+    s_wifi_started = false;
+    if (was_up) {
+        /* Leave AP mode first: the station is joined by starting the radio in
+         * station mode, which is the sequence that comes up cleanly here. */
+        esp_wifi_stop();
+    }
     mqtt_wifi_start();
     return ESP_OK;
 }
