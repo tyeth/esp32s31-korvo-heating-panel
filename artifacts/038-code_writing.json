@@ -1,0 +1,29 @@
+{
+  "agent": "code_writing",
+  "seq": 38,
+  "savedAt": "2026-11-07T18:38:29.525Z",
+  "report": {
+    "result": "pass",
+    "summary": "On every broker connect the panel now asks each TRV and air-sensor topic for its current state (empty publish, zigbee2mqtt replies with the full payload), so the cards fill at boot instead of waiting for a change. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "You're right that nothing was asking for the current values: on connect the panel only subscribed, and zigbee2mqtt publishes a device topic on change only — so the cards stayed empty until a valve moved. It now requests each topic's state as part of the connect sequence, which is how Home Assistant itself fills in on restart.",
+      "The request is an empty publish to the device's own state topic, which zigbee2mqtt answers with the full state payload (the same JSON current_heating_setpoint / local_temperature / system_mode / temperature already come from) — no second topic, no extra parsing, and the air-sensor topics are polled the same way when they are set.",
+      "It runs on every (re)connect, not just boot, so a broker restart or a Wi-Fi dip also refills the cards instead of waiting for the next change. Subscribes and polls count separately in the log, so a room whose topic never fired is visible at boot."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_logic/heating.cpp",
+      "firmware/components/app_logic/include/heating.h"
+    ],
+    "build": "esp32s31 success — 0x2cd180 (2937216 B) in a 0x380000 partition, 20% free; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "user report — device does not request the current values at boot; TRV/sensor topics only broadcast on change",
+        "fix": "heating_broker_ready() now subscribes and then publishes an empty message to every configured TRV and air-sensor topic (zigbee2mqtt replies with the full state payload); logged as \"subscribed to N room topic(s); requested fresh state of M\""
+      }
+    ],
+    "openQuestions": [
+      "zigbee2mqtt's reply arrives on the same topic the panel subscribed to; if a household disables that behaviour in z2m, the cards fall back to the saved targets until a change is published — no harm, just the old behaviour."
+    ]
+  }
+}
