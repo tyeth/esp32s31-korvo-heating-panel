@@ -1,0 +1,175 @@
+{
+  "agent": "code_review",
+  "seq": 52,
+  "savedAt": "2026-11-07T22:15:29.039Z",
+  "report": {
+    "result": "pass",
+    "summary": "The repeated configured-boot crash is now addressed at the root and the change is verified in the built image — the event loop only enqueues into app_mqtt's own queue (all Wi-Fi/IP work on mqtt_net) and CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE reads 8192 in build/config/sdkconfig.h — but no configured boot has yet been observed succeeding; two new info notes (queue created under a conditional guard, sdkconfig.product precedence) and the standing spec deviations remain.",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV> (qos1, retain 0); on connect subscribe every TRV/air-sensor topic and publish an empty message to each; {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; retained status zerocode/<mac12>/status with last-will. HTTP /settings (GET/POST), /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (generic DSP kernel, 17-phrase English vocabulary)",
+          "app_display_init (single setup task, lvgl_port_add_disp_rgb + add_touch) + heating_ui_init (waits for app_display_ready)",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (mqtt_net queue + task, handlers only enqueue, NVS config or compiled defaults, STA / onboarding AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC, decimals>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup (guided)"
+        ],
+        "expectedLogPatterns": [
+          "app_audio: \"DSP dot product: generic kernel linked (generic C (app_dsp_shim))\"",
+          "heating_voice: \"17 of 17 English phrases registered\"",
+          "app_display: one \"Display setup started\"; a duplicate init logs \"app_display_init() called twice — ignored\"",
+          "heating_ui: \"dashboard up (4 rooms)\"",
+          "app_mqtt: \"MQTT initialized (node …)\"; on association the mqtt_net task logs \"Wi-Fi got IP\" and ~1 s later \"MQTT connecting to …\"",
+          "app_mqtt: \"Wi-Fi disconnected — retrying in 30 s\" / \"Wi-Fi reconnect attempt\"",
+          "app_console: \"Console ready…\"; app_main: \"ZeroCode AI firmware started\"",
+          "on a configured boot: no \"stack overflow in task sys_evt\" (8 KB stack in the built header + queue-only dispatch — state: fixed in code, awaiting confirmation on a boot)"
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button — click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD 800x480",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE is 8192 in the generated header (build/config/sdkconfig.h:744) — the product's own event handler now only enqueues into an 8-deep queue, all Wi-Fi/IP work runs on mqtt_net.",
+          "The queue in app_mqtt is created only inside the `if (s_net_task == NULL)` block but its result is used unconditionally in the registration calls; on a hypothetical second app_mqtt_init after a failed task creation the handlers would be registered with NULL and silently drop events.",
+          "Standing behaviour notes from earlier rounds: plain-MQTT default broker, empty-payload poll to TRV state topics, single-button 10 s factory reset, three-number voice vocabulary (spec's 'set the office to 21' unsupported).",
+          "The configured boot has repeatedly failed (2304 and 4096); the 8192 build has not been booted yet."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (single setup task, lvgl_port_add_disp_rgb + add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim's generic dot product",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (queue-fed mqtt_net task, NVS config, STA / onboarding SoftAP, CA in NVS)",
+            "part": "Wi-Fi / MQTT"
+          }
+        ]
+      },
+      "filesReviewed": [
+        "artifacts/048-code_review.json",
+        "artifacts/049-functional_testing.json",
+        "artifacts/050-code_writing.json",
+        "artifacts/051-firmware_compilation.json",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_logic/zc_behaviors.cpp",
+        "firmware/sdkconfig.product",
+        "firmware/sdkconfig.defaults",
+        "firmware/build/config/sdkconfig.h",
+        "firmware/build/config/sdkconfig.cmake"
+      ],
+      "findings": [
+        {
+          "area": "correctness",
+          "description": "The product's Wi-Fi/IP event path now depends on s_net_queue, but the queue is created inside the `if (s_net_task == NULL)` block while both esp_event_handler_register() calls pass s_net_queue unconditionally. On any path where the task creation is skipped or the queue was freed, the handlers are registered with NULL and silently drop every Wi-Fi/IP event, leaving the panel on the dashboard for ever with no retry and no log.",
+          "evidence": "app_mqtt.cpp:744-751 (queue + task created only when s_net_task == NULL, failure path sets s_net_task = NULL but leaves s_net_queue whatever it is); app_mqtt.cpp:753-754 registers both handlers with s_net_queue; app_mqtt.cpp:333-338 wifi_event_handler returns early when q == NULL.",
+          "failureScenario": "A second app_mqtt_init() call (or a retry after xTaskCreate failed) leaves s_net_task NULL and any stale/free queue behind: the handlers enqueue into nothing, STA_START is never handled, esp_wifi_connect() is never called, GOT_IP never arrives, and the LED shows 'connecting' for ever with no diagnostic. Today this needs two init calls, so it is latent rather than live.",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 744,
+          "severity": "info",
+          "suggestedChange": "Create the queue unconditionally (or outside the guard), check the queue before registering the handlers, and bail out with an error log if either is missing."
+        },
+        {
+          "area": "config",
+          "description": "The 8 KB default-loop stack only reaches the build through sdkconfig.product; the board layer still outranks sdkconfig.defaults, where the mandated CONFIG_EFUSE_VIRTUAL=y and the partition-table/flash-size pins live.",
+          "evidence": "firmware/sdkconfig.product (only CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=8192); firmware/build/config/sdkconfig.h:744 confirms 8192; the board manager reports board_manager.defaults has higher priority than sdkconfig.defaults (build log, report 047).",
+          "failureScenario": "A future edit that needs another board-overriding symbol puts it in sdkconfig.defaults and the board layer silently wins: the image keeps the board value and the fault the value was meant to prevent returns without any error.",
+          "file": "firmware/sdkconfig.product",
+          "line": 14,
+          "severity": "info",
+          "suggestedChange": "Keep every board-overriding value in sdkconfig.product and check build/config/sdkconfig.h whenever one is added."
+        }
+      ],
+      "previousFindingsStatus": [
+        {
+          "evidence": "app_mqtt.cpp:329-339 — wifi_event_handler only xQueueSend()s a two-int record; :265-330 net_task performs esp_wifi_connect(), the retry and the debounced broker start; sdkconfig.product sets 8192 and build/config/sdkconfig.h:744 read here says `#define CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE 8192` (sdkconfig.cmake:1101 \"8192\").",
+          "finding": "fail — configured boot still aborts with 'A stack overflow in task sys_evt' (3rd round, 4096 already in the image)",
+          "status": "addressed at the root (dispatch is now a queue copy only, stack raised to 8192 and confirmed in the built header); a configured boot has not yet been observed"
+        },
+        {
+          "evidence": "app_mqtt.cpp:244-259 comment now states the measured 4096 result and the queue design; zc_behaviors.cpp comment rewritten to match what the code does.",
+          "finding": "info — comments asserted behaviour the code did not implement (STA_START handler)",
+          "status": "fixed (comments now describe the actual queue-based dispatch)"
+        },
+        {
+          "evidence": "artifacts/049: display registered once on every boot, second init refused, no LVGL teardown, no assert.",
+          "finding": "fail — display double bring-up / boot loop",
+          "status": "fixed (confirmed across all boots)"
+        },
+        {
+          "evidence": "heating_voice.cpp k_variant_tenth {200, 215, 210}.",
+          "finding": "warning — voice vocabulary lacks the spec's 'set the office to 21'",
+          "status": "unchanged (writer left it for the owner)"
+        },
+        {
+          "evidence": "app_mqtt.cpp HEATING_DEFAULT_BROKER_URI \"mqtt://homeassistant.gdenu.fi:1883\".",
+          "finding": "warning — default broker is plain MQTT",
+          "status": "unchanged (owner's choice)"
+        },
+        {
+          "evidence": "heating.cpp heating_request_states(): empty payload to each TRV state topic on connect.",
+          "finding": "warning — state poll writes to zigbee2mqtt device (command) topics",
+          "status": "unchanged"
+        },
+        {
+          "evidence": "app_logic.cpp:375-376 COMBO_ARM_MS on handles[0] arms a 10 s NVS wipe.",
+          "finding": "warning — factory reset is a single 10 s button hold, not SET+MODE",
+          "status": "unchanged (documented deviation)"
+        }
+      ]
+    }
+  }
+}
