@@ -9,8 +9,11 @@
 #include <esp_system.h>
 #include <time.h>
 #include <stdlib.h>
+#include <esp_event.h>
 #include <esp_netif_sntp.h>
 #include <esp_sntp.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <esp_console.h>
 #include <esp_timer.h>
 #include <inttypes.h>
@@ -53,29 +56,12 @@ static void clock_sntp_synced(struct timeval *tv)
 
 static void zc_clock_init(void)
 {
-        /* The timezone applies to localtime() whether or not a sync ever lands. */
-        setenv("TZ", CLOCK_TZ, 1);
-        tzset();
-    #if CONFIG_SOC_WIFI_SUPPORTED || CONFIG_SOC_WIRELESS_HOST_SUPPORTED || CONFIG_ETH_ENABLED
-        if (esp_sntp_enabled()) {
-            /* A transport already runs SNTP (RainMaker does). Don't start a second
-             * client — just observe its syncs. */
-            esp_sntp_set_time_sync_notification_cb(clock_sntp_synced);
-            ESP_LOGI(TAG, "clock: SNTP already running — observing");
-        } else {
-            esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(CLOCK_NTP_SERVER);
-            cfg.start = true;              /* the client waits for an IP by itself */
-            cfg.sync_cb = clock_sntp_synced;
-            esp_err_t err = esp_netif_sntp_init(&cfg);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "clock: SNTP init failed: %s — time() stays at the epoch", esp_err_to_name(err));
-            } else {
-                ESP_LOGI(TAG, "clock: SNTP started (%s)", CLOCK_NTP_SERVER);
-            }
-        }
-    #else
-        ESP_LOGW(TAG, "clock: no IP stack on this chip — clock stays unset");
-    #endif
+    /* Set the zone now — localtime()/strftime() must work from the first call.
+     * The SNTP client itself is started by diagnostics_sntp_start() from a tiny
+     * task: it waits for the default event loop, which the transport block
+     * creates around the same time, and must not depend on who wins that race. */
+    setenv("TZ", CLOCK_TZ, 1);
+    tzset();
 }
 
 /* behaviors/boot_reason_logger (BOOT_REASON) */
@@ -130,10 +116,62 @@ void diagnostics_logic_init(void)
     zc_wdt_init();
 }
 
-/* app_main calls this once the network stack exists (its own transport block
- * creates the default event loop) — not at behaviour time, where the clock
- * would be started before there is any IP stack to sync it. */
+/* ── the wall clock's time source ──────────────────────────────────────
+ *
+ * esp_netif_sntp_init() needs the default event loop, and on this product the
+ * transport block (app_mqtt_init) is what creates it — after the behaviours
+ * run. Starting the client on a task that waits for the loop removes that
+ * ordering race: whoever creates the loop first, SNTP comes up a moment later.
+ */
+#if CONFIG_SOC_WIFI_SUPPORTED || CONFIG_SOC_WIRELESS_HOST_SUPPORTED || CONFIG_ETH_ENABLED
+static void sntp_start_task(void *arg)
+{
+    (void)arg;
+    /* The default event loop must exist before SNTP starts. Calling
+     * esp_event_loop_create_default() is safe in either order: it creates the
+     * loop if the transport block has not yet, and returns ESP_ERR_INVALID_STATE
+     * if it already has. */
+    esp_err_t loop_err = esp_event_loop_create_default();
+    if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "clock: default event loop unavailable (%s)", esp_err_to_name(loop_err));
+    }
+
+    if (esp_sntp_enabled()) {
+        /* A transport already runs SNTP (RainMaker does). Don't start a second
+         * client — just observe its syncs. */
+        esp_sntp_set_time_sync_notification_cb(clock_sntp_synced);
+        ESP_LOGI(TAG, "clock: SNTP already running — observing");
+    } else {
+        esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(CLOCK_NTP_SERVER);
+        cfg.start = true;              /* the client waits for an IP by itself */
+        cfg.sync_cb = clock_sntp_synced;
+        esp_err_t err = esp_netif_sntp_init(&cfg);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "clock: SNTP init failed: %s — time() stays at the epoch", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "clock: SNTP started (%s)", CLOCK_NTP_SERVER);
+        }
+    }
+    vTaskDelete(NULL);
+}
+#endif
+
+void diagnostics_sntp_start(void)
+{
+#if CONFIG_SOC_WIFI_SUPPORTED || CONFIG_SOC_WIRELESS_HOST_SUPPORTED || CONFIG_ETH_ENABLED
+    if (xTaskCreate(sntp_start_task, "sntp_start", 3072, NULL, 3, NULL) != pdPASS) {
+        ESP_LOGW(TAG, "clock: SNTP task not started — time() stays at the epoch");
+    }
+#else
+    ESP_LOGW(TAG, "clock: no IP stack on this chip — clock stays unset");
+#endif
+}
+
+/* app_main calls this once the network stack exists: it sets the zone and
+ * starts the SNTP client on its own task (see sntp_start_task above), so the
+ * clock never depends on who created the default event loop first. */
 void diagnostics_clock_init(void)
 {
     zc_clock_init();
+    diagnostics_sntp_start();
 }

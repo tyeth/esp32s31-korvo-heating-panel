@@ -267,6 +267,11 @@ static void format_tenth(int16_t tenth, char *buf, size_t len)
     snprintf(buf, len, "%d.%d", tenth / 10, (tenth % 10 + 10) % 10);
 }
 
+int16_t heating_clamp_tenth(int16_t tenth)
+{
+    return clamp_round(tenth);
+}
+
 heating_req_result_t heating_request_target(int idx, int16_t tenth)
 {
     heating_room_t *room = heating_room(idx);

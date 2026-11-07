@@ -110,6 +110,9 @@ bool heating_online(void);
  *  Refused — never queued — while offline. */
 heating_req_result_t heating_request_target(int idx, int16_t tenth);
 
+/** The target actually published for @p tenth: 5–30 °C in 0.5 °C steps. */
+int16_t heating_clamp_tenth(int16_t tenth);
+
 /** Publish {"time": 254} to the zigbee2mqtt permit-join request topic. */
 esp_err_t heating_permit_join(void);
 

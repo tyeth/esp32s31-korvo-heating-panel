@@ -34,16 +34,23 @@ static void strip_idle(void);
 
 /* ── one console command, for bench use with no network ──────────────── */
 
+static void heating_console_usage(void)
+{
+    printf("usage: heating set <room 0-%d> <target \xC2\xB0" "C, 5..30>\n", HEATING_ROOMS - 1);
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        heating_room_t *r = heating_room(i);
+        int16_t t = heating_room_target_ui(r);
+        printf("  %d  %-12s target %d.%d  %s\n", i, r->cfg.name,
+               (int)(t / 10), (int)((t % 10 + 10) % 10), r->cfg.trv_topic);
+    }
+    /* What a setpoint would carry right now — the panel's own online state. */
+    printf("panel is %s\n", heating_online() ? "online" : "offline (nothing is published)");
+}
+
 static int heating_console_cmd(int argc, char **argv)
 {
-    if (argc < 3 || strcmp(argv[1], "set") != 0) {
-        printf("usage: heating set <room 0-%d> <target \xC2\xB0" "C, 5..30>\n", HEATING_ROOMS - 1);
-        for (int i = 0; i < HEATING_ROOMS; i++) {
-            heating_room_t *r = heating_room(i);
-            int16_t t = heating_room_target_ui(r);
-            printf("  %d  %-12s target %d.%d  %s\n", i, r->cfg.name,
-                   (int)(t / 10), (int)((t % 10 + 10) % 10), r->cfg.trv_topic);
-        }
+    if (argc < 4 || strcmp(argv[1], "set") != 0) {
+        heating_console_usage();
         return 1;
     }
     int idx = atoi(argv[2]);
@@ -51,17 +58,30 @@ static int heating_console_cmd(int argc, char **argv)
         printf("no room %d\n", idx);
         return 1;
     }
-    int whole = atoi(argv[3]);
-    int tenth = whole * 10;
-    switch (heating_request_target(idx, (int16_t)tenth)) {
+
+    /* "21" / "21.5": degrees with at most one decimal, like the settings. */
+    char *end = NULL;
+    double deg = strtod(argv[3], &end);
+    if (end == argv[3] || (end != NULL && *end != '\0')) {
+        printf("not a temperature: %s\n", argv[3]);
+        return 1;
+    }
+    if (deg < HEATING_MIN_TENTH / 10.0 || deg > HEATING_MAX_TENTH / 10.0) {
+        printf("out of range: %.1f \xC2\xB0" "C (5.0 to 30.0)\n", deg);
+        return 1;
+    }
+    int16_t want = heating_clamp_tenth((int16_t)(deg * 10.0 + (deg < 0 ? -0.5 : 0.5)));
+
+    switch (heating_request_target(idx, want)) {
         case HEATING_REQ_OK:
-            printf("%s -> %d.0\n", heating_room(idx)->cfg.name, whole);
+            printf("%s -> %d.%d\n", heating_room(idx)->cfg.name,
+                   (int)(want / 10), (int)((want % 10 + 10) % 10));
             return 0;
         case HEATING_REQ_ALREADY_SET:
             printf("already set\n");
             return 1;
         default:
-            printf("offline \xE2\x80\x94 nothing published\n");
+            printf("offline \xE2\x80\x94 nothing published (the panel has no broker session)\n");
             return 1;
     }
 }
