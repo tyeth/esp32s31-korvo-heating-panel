@@ -1,0 +1,220 @@
+{
+  "agent": "code_review",
+  "seq": 40,
+  "savedAt": "2026-11-07T18:40:50.399Z",
+  "report": {
+    "result": "pass",
+    "summary": "The real-board boot-loop regression is fixed in code (idempotent single display init, dashboard waits on app_display_ready, stray CMakeLists.txt.new gone, SNTP race and default-broker port corrected); remaining items are spec-behaviour warnings (single-button reset, 3-number voice vocabulary, plain-MQTT default broker, empty-payload TRV poll) that do not block the build, and a hardware re-run is still outstanding.",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV> (qos1, retain 0); on connect subscribe each TRV and air-sensor topic and then publish an empty message to each; {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; retained status zerocode/<mac12>/status with last-will. HTTP /settings (GET/POST), /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (generic DSP kernel, English vocabulary, AFE + WakeNet + MultiNet)",
+          "app_display_init (single display_setup task: lvgl_port_init, lvgl_port_add_disp_rgb, lvgl_port_add_touch, sets app_display_ready()) + heating_ui_init (waits for ready up to 30 s, builds cards under the LVGL lock)",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (NVS config or defaults Wi-Fi 'free4all' / broker mqtt://homeassistant.gdenu.fi:1883, then STA or onboarding AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init (TZ + SNTP on its own task)",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC, decimals>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup (guided)"
+        ],
+        "expectedLogPatterns": [
+          "app_audio: \"DSP dot product: generic kernel linked (generic C (app_dsp_shim))\"",
+          "heating_voice: \"21 of 21 English phrases registered\"; vocabulary list printed when a window opens",
+          "app_display: one \"Display setup started\" / \"Panel 'display_lcd' … generic_rgb rgb 800x480\" / \"Display initialized\"; a second init logs \"app_display_init() called twice — ignored\"",
+          "heating_ui: \"dashboard up (4 rooms)\"",
+          "app_mqtt: \"no Wi-Fi saved — default 'free4all'\", \"no broker saved — default mqtt://homeassistant.gdenu.fi:1883\" or the SoftAP banner",
+          "heating: \"subscribed to N room topic(s); requested fresh state of M\" / \"state requested for M topic(s)\"",
+          "diagnostics: \"clock: SNTP started (pool.ntp.org)\"",
+          "app_console: \"Console ready…\"; app_main: \"ZeroCode AI firmware started\""
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button — click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD 800x480 (lvgl_port_add_disp_rgb)",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "Double display bring-up fixed structurally (idempotent app_display_init + app_display_ready/ failed), which removes the real-board boot loop; a hardware re-run is still outstanding.",
+          "app_audio.cpp calls heating_ui_poke() plus heating_voice_print_vocabulary() (168-170, 178-180) and compiled cleanly in this tree's build.",
+          "Factory reset is a 10 s single-button hold (documented deviation from SET+MODE).",
+          "Default Wi-Fi 'free4all'/'password' and plain-MQTT default broker are compiled in when nothing is stored (owner's request).",
+          "The 'state request' publishes an empty message to each TRV state topic, which zigbee2mqtt also accepts as a command.",
+          "spec.json marks every feature 'built' while product_testing's LCD/boot-health items have not been re-run after the fix."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (single setup task, lvgl_port_add_disp_rgb + add_touch, app_display_ready())",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim's generic dot product",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (STA defaults, onboarding SoftAP, CA in NVS, state-request poll)",
+            "part": "Wi-Fi / MQTT"
+          }
+        ]
+      },
+      "filesReviewed": [
+        "artifacts/030-code_review.json",
+        "artifacts/031-functional_testing.json",
+        "artifacts/032-product_testing.json",
+        "artifacts/hardware-tests.json",
+        "artifacts/033-code_writing.json",
+        "artifacts/034-code_writing.json",
+        "artifacts/035-code_writing.json",
+        "artifacts/036-code_writing.json",
+        "artifacts/037-code_writing.json",
+        "artifacts/038-code_writing.json",
+        "artifacts/039-firmware_compilation.json",
+        "firmware/components/app_display/app_display.cpp",
+        "firmware/components/app_display/include/app_display.h",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/heating.cpp",
+        "firmware/components/app_logic/heating_voice.cpp",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_logic/diagnostics.cpp",
+        "firmware/components/app_logic/zc_behaviors.cpp",
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/components/app_mqtt/app_mqtt.cpp"
+      ],
+      "findings": [
+        {
+          "area": "correctness",
+          "description": "The 10 s single-button factory reset wipes NVS (Wi-Fi, broker URI/credentials, CA, room table) on a hold that can happen by accident: the same button's short click is push-to-talk, and the countdown only starts at the 1 s mark with a banner a dimmed screen may hide. The spec's deliberate two-finger SET+MODE combination exists to make this unlikely; the firmware keeps the easier trigger and only documents it.",
+          "evidence": "app_logic.cpp:247-258 on_set_arm arms s_fr_timer on BUTTON_LONG_PRESS_START (COMBO_ARM_MS 1000) at :375-376; factory_reset_cb :214-221 -> heating_factory_reset (nvs_flash_erase + esp_restart). artifacts/031 notes it as a documented deviation.",
+          "failureScenario": "A child, or a user resting a finger on the front button while reading, holds it 10 s: settings and the four room topics are erased and the panel reboots to onboarding, with no second button confirming intent.",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 375,
+          "severity": "warning",
+          "suggestedChange": "Require a second, independent confirmation for the same hold (a volume key down, or a confirming click inside the countdown), or keep the spec's SET+MODE combination."
+        },
+        {
+          "area": "spec_alignment",
+          "description": "Spoken setpoints cover only three numbers (20, 21.5, 21-and-a-half) for every room, so the spec's own example 'set the office to 21' has no phrase and any other value is unreachable by voice.",
+          "evidence": "heating_voice.cpp:66-72 k_variant_tenth = {200, 215, 210}; phrase_text :96-107 builds only those three variants per room.",
+          "failureScenario": "A user says 'set the office to 21': no such phrase is in the model, the window ends with 'Sorry, not understood' and nothing is published.",
+          "file": "firmware/components/app_logic/heating_voice.cpp",
+          "line": 66,
+          "severity": "warning",
+          "suggestedChange": "Generate the phrase set over the real range if MultiNet's phrase budget allows, or document the three-number limit in the UI and the product description."
+        },
+        {
+          "area": "spec_alignment",
+          "description": "The factory default broker is plain MQTT (mqtt://homeassistant.gdenu.fi:1883), so TRV setpoints and broker credentials travel unencrypted by default, where the previous default was TLS.",
+          "evidence": "app_mqtt.cpp:145-150 HEATING_DEFAULT_BROKER_URI \"mqtt://homeassistant.gdenu.fi:1883\"; TLS only for mqtts/ssl/:8883 (mqtt_start_client :199-203).",
+          "failureScenario": "A fresh panel joins 'free4all' and dials the default broker over plain 1883: anyone on the network can capture the broker password and rewrite every setpoint.",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 148,
+          "severity": "warning",
+          "suggestedChange": "Default to the TLS listener now that the pinned CA is persisted and the settings page explains the ports; keep 1883 as an explicit user choice."
+        },
+        {
+          "area": "correctness",
+          "description": "On every connect the panel publishes an EMPTY message to each TRV state topic to 'ask' for state; zigbee2mqtt treats a message on a device topic as a command, and an empty payload is not a documented read request (only the air-sensor topics have harmless empty-payload semantics).",
+          "evidence": "heating.cpp:381-397 heating_request_states(): `static const char kPoll[] = \"\"; app_mqtt_publish(room->cfg.trv_topic, kPoll, 0, 0, false)` for TRV and sensor topics, called from heating_broker_ready :370.",
+          "failureScenario": "Broker comes up: the panel publishes a 0-byte message to zigbee2mqtt/0xa4c1383b5b3d7063; if the bridge forwards it, the TRV gets a malformed write — and in the benign case the panel still emits one spurious command-side message per room per connect.",
+          "file": "firmware/components/app_logic/heating.cpp",
+          "line": 391,
+          "severity": "warning",
+          "suggestedChange": "Request state through zigbee2mqtt's read/configure path, or restrict the empty-payload poll to the air-sensor topics, leaving TRV state topics read-only for this product."
+        },
+        {
+          "area": "integrity",
+          "description": "spec.json now marks every feature 'built' with writer 'user' while touch, LED colours, voice recognition and phone onboarding are 'unverified' in artifacts/031 and product_testing's LCD/boot-health items were never re-run after the display fix.",
+          "evidence": "artifacts/spec.json:1-3 writer 'user' and features[] status 'built'; artifacts/032-product_testing.json result fail on 'Boot health' and 'LCD shows the dashboard'; artifacts/031 lists the hardware checks as unverified.",
+          "failureScenario": "A reader of spec.json believes the panel was demonstrated on the board; the next hardware session treats a crash or a blank panel as a regression against a 'built' baseline that no post-fix run supports.",
+          "file": "artifacts/spec.json",
+          "line": 1,
+          "severity": "info",
+          "suggestedChange": "Keep verified/unverified distinct until the outstanding hardware tests in hardware-tests.json have been run."
+        }
+      ],
+      "previousFindingsStatus": [
+        {
+          "evidence": "app_display.cpp:180-201 idempotent app_display_init() + app_display.h app_display_ready()/failed(); heating_ui.cpp:481-505 waits for ready (30 s) instead of sleeping; the second setup task and second lvgl_port_init are impossible now.",
+          "finding": "fail — real board boot-loops: display_init run twice, assert after the panel line",
+          "status": "fixed in code; hardware re-run still outstanding"
+        },
+        {
+          "evidence": "app_display.cpp:180-201 (second call logs 'called twice — ignored'); a single 'Display setup started' remains.",
+          "finding": "info — duplicate 'Display setup started' pairs",
+          "status": "fixed"
+        },
+        {
+          "evidence": "heating_ui.cpp:103-108 heating_ui_poke(); called from app_audio.cpp:168/:178, heating.cpp:345, heating_voice.cpp:175; app_logic.cpp:426-430 seeds the idle clock.",
+          "finding": "info — dim ignored the spec's wake sources other than touch",
+          "status": "fixed"
+        },
+        {
+          "evidence": "diagnostics.cpp:116-171 sntp_start_task + diagnostics_sntp_start, declared in zc_behaviors.cpp.",
+          "finding": "warning — SNTP initialised before the default event loop",
+          "status": "fixed"
+        },
+        {
+          "evidence": "app_mqtt.cpp:148 now 1883 plain; heating_web.cpp:216-222 explains the ports.",
+          "finding": "warning — default broker pointed at the Home Assistant web port 8123",
+          "status": "fixed"
+        },
+        {
+          "evidence": "search for dsp_probe under firmware/components/app_audio/** returns nothing.",
+          "finding": "warning — stray app_audio/CMakeLists.txt.new referencing dsp_probe.c",
+          "status": "fixed"
+        },
+        {
+          "evidence": "app_mqtt.cpp:199-203 skip_cert_common_name_check for every TLS URI, kept at the owner's request.",
+          "finding": "warning — fleet-wide TLS certificate name check skipped",
+          "status": "accepted by owner (kept)"
+        }
+      ]
+    }
+  }
+}
