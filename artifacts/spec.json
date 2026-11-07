@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:38:37.811Z",
+  "updatedAt": "2026-11-07T14:40:12.225Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -76,7 +76,25 @@
       },
       {
         "id": "f6",
-        "text": "Status LED (on-board WS2812 strip) — shows listening / thinking / speaking / offline",
+        "text": "Status LED (on-board WS2812 strip) — dim white = connecting, green = online, amber = listening, red = offline / command rejected",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f12",
+        "text": "Offline behaviour — last-known values stay on screen greyed out with an \"offline\" note; taps/voice setpoints are refused (not queued) and the LED flashes red",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f13",
+        "text": "At boot the dashboard comes up straight away with the last saved targets; no splash screen, no setup wizard on the panel",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f14",
+        "text": "TRVs stay in heat mode at optimistic setpoints (the boiler is not remote-controlled yet); the device works at that level and never claims to control the boiler",
         "status": "draft",
         "source": "ai"
       }
