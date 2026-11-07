@@ -1,0 +1,68 @@
+# ZeroCode AI - Common sdkconfig defaults
+# Protocol-specific configs are added by templates via sdkconfig merge.
+
+# eFuse virtualization — MANDATORY, do not remove. Compiles the eFuse-program path
+# out of the app AND bootloader, so a generated image can never permanently burn a
+# one-time eFuse (secure boot / flash encryption / download-mode / JTAG lockout).
+# Platform-enforced: the agent write tool and every build refuse its removal.
+CONFIG_EFUSE_VIRTUAL=y
+
+# Partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Flash size — the floor, matching the default 4mb partition table. A board with
+# more flash overrides it (sdkconfig.defaults.board), and a bigger partition
+# table block sets the matching size.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Compiler optimization for size
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+CONFIG_NEWLIB_NANO_FORMAT=y
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Stack sizes
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# No build date/time in the app or bootloader descriptor. Source paths are
+# hidden by the prefix maps in cmake/prefix_maps.cmake.
+# CONFIG_APP_COMPILE_TIME_DATE is not set
+# CONFIG_BOOTLOADER_COMPILE_TIME_DATE is not set
+
+# Block, framework and product contributions
+CONFIG_SR_MN_EN_MULTINET7_QUANT=y
+CONFIG_SR_WN_WN9_HIESP=y
+CONFIG_MODEL_IN_FLASH=y
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+CONFIG_LV_FONT_MONTSERRAT_8=y
+CONFIG_LV_FONT_MONTSERRAT_10=y
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_18=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_22=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_26=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_30=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_FONT_MONTSERRAT_34=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
+CONFIG_LV_FONT_MONTSERRAT_38=y
+CONFIG_LV_FONT_MONTSERRAT_40=y
+CONFIG_LV_FONT_MONTSERRAT_42=y
+CONFIG_LV_FONT_MONTSERRAT_44=y
+CONFIG_LV_FONT_MONTSERRAT_46=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+CONFIG_LV_USE_QRCODE=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y

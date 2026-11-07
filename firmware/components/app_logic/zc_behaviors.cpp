@@ -1,0 +1,20 @@
+/* GENERATED — the composed behaviors' entry point. Do not put product logic
+ * here and do not edit: the generator rewrites this file. Product logic
+ * belongs in app_logic.cpp (app_logic_init) or its own file. */
+#include "app_logic.h"
+#include <esp_log.h>
+
+static const char *TAG = "zc_behaviors";
+
+/* Each concern lives in its own translation unit — declared here, run below. */
+void diagnostics_logic_init(void);
+void console_logic_init(void);
+
+esp_err_t zc_behaviors_init(void)
+{
+    diagnostics_logic_init();
+    console_logic_init();
+
+    ESP_LOGI(TAG, "Composed behaviors initialized");
+    return ESP_OK;
+}

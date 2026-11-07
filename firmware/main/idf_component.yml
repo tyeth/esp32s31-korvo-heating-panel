@@ -1,0 +1,18 @@
+dependencies:
+  idf: ">=6.0,<7.0"
+  espressif/button: ~4.2.0
+  espressif/esp_wifi_remote:
+    version: ">=0.7,<2.0"
+    rules:
+      - if: target in [esp32p4]
+  espressif/esp_hosted:
+    version: ">=2.7,<3.0"
+    rules:
+      - if: target in [esp32p4]
+  espressif/esp-sr: ~2.4.7
+  lvgl/lvgl: ~9.5.0
+  espressif/esp_lvgl_port: ~2.9.0
+  espressif/mqtt: ~1.1.0
+  espressif/json_parser: ^2.0.0
+  espressif/mdns: ~1.11.3
+  espressif/esp_board_manager: ~0.7.1
