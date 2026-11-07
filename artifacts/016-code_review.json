@@ -1,0 +1,176 @@
+{
+  "agent": "code_review",
+  "seq": 16,
+  "savedAt": "2026-11-07T16:06:37.465Z",
+  "report": {
+    "result": "fail",
+    "summary": "Two regressions in the TLS change: s_ca_pem is dereferenced while still NULL (pending connect since boot, and the settings page's own POST after saving a broker), and the new mqtts/gdenu.fi default plus the CA setter are dead code because app_mqtt_init never calls mqtt_load_config().",
+    "report": {
+      "filesReviewed": [
+        "artifacts/013-code_review.json",
+        "artifacts/014-code_writing.json",
+        "artifacts/015-firmware_compilation.json",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_mqtt/include/app_mqtt.h",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/managed_components/espressif__mqtt/include/mqtt_client.h"
+      ],
+      "previousFindingsStatus": [
+        {
+          "finding": "warning — BUTTON_LONG_PRESS_START can re-deliver and restart the countdown",
+          "status": "fixed (verified)",
+          "evidence": "on_set_arm (app_logic.cpp:247-258) is now guarded by `if (!s_combo.set_down) return;` and s_combo.set_down is cleared only on PRESS_UP (app_logic.cpp:260-266), so a repeat event while held cannot re-arm; app_audio s_btn_window also cleared on match/timeout (app_audio.cpp:190-197)."
+        },
+        {
+          "finding": "critical — factory reset is a single-button hold, not the spec's SET+MODE",
+          "status": "unchanged/accepted deviation",
+          "evidence": "app_logic.cpp:373-376 still binds COMBO_ARM_MS on handles[0] only; report 014 records no change. Not re-raised this round."
+        }
+      ],
+      "findings": [
+        {
+          "severity": "critical",
+          "area": "memory_safety",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 193,
+          "description": "mqtt_start_client() now dereferences s_ca_pem, which is initialised to NULL and only ever assigned by app_mqtt_set_broker_ca() — which nothing calls (heating_web.cpp has no CA field, no console command sets it). `s_ca_pem[0]` on a NULL pointer is a load from address 0, which on the ESP32 aborts (panic -> reboot loop) every time a TLS broker session is started before a CA is set.",
+          "failureScenario": "Case A: the panel boots, associates with Wi-Fi, gets an IP -> mqtt_start_client() -> mqtt_uri_is_tls(\"mqtts://…\") true -> `if (s_ca_pem[0])` reads address 0 -> LoadProhibited panic and reset; the retry repeats it, so a TLS-configured panel never keeps a broker session. Case B (reachable today even with the dead default path): the user enters mqtts:// on the settings page; apply_form() -> app_mqtt_set_broker() -> mqtt_start_client() on the httpd task panics and reboots the panel, and the page never renders, so the saved broker can never be confirmed.",
+          "evidence": "app_mqtt.cpp:47-50 `static char *s_ca_pem = NULL;`; app_mqtt.cpp:186-196 `if (mqtt_uri_is_tls(s_uri)) { … if (s_ca_pem[0]) { cfg.broker.verification.certificate = s_ca_pem; } }`; app_mqtt.cpp:478-486 the only writer app_mqtt_set_broker_ca(), called from nowhere (search in heating_web.cpp/app_mqtt.cpp shows only its definition and prototype app_mqtt.h:70).",
+          "suggestedChange": "Test for the pointer before indexing (`if (s_ca_pem && s_ca_pem[0])`), or keep an always-valid empty buffer; and wire the CA setter to an actual surface (settings-page field or console command) if it is meant to be usable."
+        },
+        {
+          "severity": "critical",
+          "area": "wiring",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 637,
+          "description": "app_mqtt_init() no longer calls mqtt_load_config(): the call was dropped when the 'MQTT not configured' block was rewritten, so the stored SSID/password/broker/credentials are never loaded into the statics at boot. The new household default broker (mqtts://homeassistant.gdenu.fi:8123) is therefore never applied, every saved setting is ignored after a reboot, and any code reading s_ssid/s_uri before a setter runs sees empty strings.",
+          "failureScenario": "The user saves mqtts://homeassistant.gdenu.fi:8123 (or any broker) and Wi-Fi on the settings page. After the next power cycle: s_ssid and s_uri are empty, app_mqtt_wifi_missing() is true, app_mqtt_ap_start() reopens the onboarding access point, app_mqtt_configured() is false so the LED never goes green and heating_request_target() returns HEATING_REQ_OFFLINE on every tap, and the 'default broker' path in mqtt_load_config() (:401-409) never executes — the panel behaves as factory-fresh on every boot.",
+          "evidence": "app_mqtt.cpp:612-669 app_mqtt_init(): event/netif init, console registrations, the `if (s_ssid[0] == 0 || s_uri[0] == 0)` warning, mqtt_wifi_start(), the AP start — no mqtt_load_config() call anywhere in the function; its definition app_mqtt.cpp:388-409 is referenced nowhere (the only other reference in the tree is its declaration-less static body).",
+          "suggestedChange": "Restore `mqtt_load_config();` in app_mqtt_init() before the configured/missing checks, and keep it before mqtt_wifi_start()/app_mqtt_ap_start() so the AP decision is made from the stored credentials."
+        },
+        {
+          "severity": "warning",
+          "area": "security",
+          "file": "firmware/components/mqtt/app_mqtt/app_mqtt.cpp",
+          "line": 191,
+          "description": "For every TLS broker URI the client now runs with skip_cert_common_name_check = true. The header the writer relies on says this 'reduces the security of TLS and makes the MQTT client susceptible to MITM attacks' — skipping the name check while keeping the chain check means any host holding any certificate from the built-in CA pack (i.e. any publicly issued cert) is accepted as the household broker. The report justifies it by the server's certificate name, but the fleet-wide default is what every panel gets.",
+          "failureScenario": "An attacker on the path presents any valid public certificate (e.g. for a domain they control, plus the public chain) to mqtts://homeassistant.gdenu.fi:8123; with the name check skipped and no pinned CA (no UI can set s_ca_pem), esp-tls accepts the session, and the attacker sees the user's broker password and can rewrite every TRV setpoint.",
+          "evidence": "app_mqtt.cpp:186-196 (skip_cert_common_name_check = true for every mqtts/ssl/:8883 URI); managed_components/espressif__mqtt/include/mqtt_client.h:286-292 documents the MITM consequence; app_mqtt.cpp:478-486 app_mqtt_set_broker_ca() has no caller, so the pinned-CA mitigation is unreachable.",
+          "suggestedChange": "Do not weaken TLS for the whole fleet: ship the household's CA (or the real host name) as the pinned anchor and keep the name check on, or make the skip opt-in per broker from the settings page with the consequence shown, rather than a blanket rule for every mqtts:// URI."
+        },
+        {
+          "severity": "info",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 147,
+          "description": "The spec's connectivity is 'Wi-Fi -> zigbee2mqtt bridge topics'; the change hardcodes a household broker host (Home Assistant on 8123) as the firmware default. Even once mqtt_load_config() is restored this bakes one installation's network into every build and contradicts the spec's 'broker settings live on the settings page' model.",
+          "failureScenario": "A second panel (or a re-sold unit) boots with the author's broker as its default and starts connecting to homeassistant.gdenu.fi with TLS name checking skipped before any credential is entered.",
+          "evidence": "app_mqtt.cpp:143-149 HEATING_DEFAULT_BROKER_URI/HEATING_DEFAULT_BROKER_USER; heating_web.cpp:216-222 placeholder now advertises the same host.",
+          "suggestedChange": "Keep a neutral default (empty broker, onboarding via the AP) and put the household's URI in the settings page/console flow rather than the firmware."
+        },
+        {
+          "severity": "info",
+          "area": "correctness",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 478,
+          "description": "app_mqtt_set_broker_ca() frees and reallocates the buffer without copying the old client's pointer semantics: if the MQTT client is running with cfg.broker.verification.certificate = s_ca_pem, the free() invalidates the buffer the live TLS session may still reference, and the new pointer is not applied until the client is restarted by a broker edit.",
+          "failureScenario": "A future settings-page CA save calls app_mqtt_set_broker_ca() while the client is connected: the old PEM is freed under the running session and the new one only takes effect on the next reconnect, with no restart request.",
+          "evidence": "app_mqtt.cpp:478-486 app_mqtt_set_broker_ca (free + malloc, no client restart); mqtt_client.h:281-285 states the certificate pointer is not copied by the client.",
+          "suggestedChange": "Apply the CA by restarting the client (stop/destroy then mqtt_start_client) and keep the old buffer alive until the client is stopped."
+        }
+      ],
+      "deviceBehavior": {
+        "gpios": [
+          {
+            "pin": "37",
+            "function": "WS2812 status strip"
+          },
+          {
+            "pin": "61",
+            "function": "BOOT button — click push-to-talk, long press permit-join / reopen onboarding AP"
+          },
+          {
+            "pin": "ADC oneshot channel",
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset"
+          },
+          {
+            "pin": "0/1",
+            "function": "I2C for GT1151 touch"
+          },
+          {
+            "pin": "40/43/44/45",
+            "function": "on-board RGB LCD"
+          },
+          {
+            "pin": "3/4/5/6/7",
+            "function": "ES8389 codec + I2S voice mic"
+          }
+        ],
+        "peripherals": [
+          {
+            "part": "RGB LCD + LVGL",
+            "driver": "app_display"
+          },
+          {
+            "part": "GT1151 touch",
+            "driver": "app_display indev + LVGL press/release events"
+          },
+          {
+            "part": "ES8389 codec",
+            "driver": "app_driver"
+          },
+          {
+            "part": "esp-sr AFE + MultiNet",
+            "driver": "app_audio (listen_once/stop)"
+          },
+          {
+            "part": "WS2812 strip",
+            "driver": "app_driver status_board_strip"
+          },
+          {
+            "part": "Wi-Fi STA + onboarding SoftAP",
+            "driver": "app_mqtt"
+          },
+          {
+            "part": "MQTT over TLS (mqtts)",
+            "driver": "app_mqtt esp-mqtt, skip_cert_common_name_check"
+          }
+        ],
+        "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV>; {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe each TRV and air-sensor topic; retained status topic with last-will. HTTP /settings, /api/state, /api/set.",
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (no config load; STA or AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "expectedLogPatterns": [
+          "app_mqtt: \"MQTT initialized (node <mac>)\" without the \"no broker saved — default …\" line (load_config never runs)",
+          "app_mqtt: \"SoftAP …\" on every boot because s_ssid stays empty",
+          "app_mqtt: \"MQTT connecting to mqtts://… (TLS, certificate name check skipped)\" only when a URI was just set",
+          "app_mqtt: \"MQTT disconnected — retrying in 30 s\" / \"Wi-Fi reconnect attempt\""
+        ],
+        "cliCommands": [
+          "heating set <room> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "notes": [
+          "Any TLS broker session currently started after boot dereferences a NULL s_ca_pem (line 193).",
+          "Saved Wi-Fi/broker settings are never restored at boot because mqtt_load_config() is no longer called.",
+          "The pinned-CA mitigation the TLS design relies on has no UI or console surface."
+        ]
+      }
+    }
+  }
+}
