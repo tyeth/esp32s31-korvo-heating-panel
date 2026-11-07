@@ -1,0 +1,28 @@
+{
+  "agent": "firmware_compilation",
+  "seq": 3,
+  "savedAt": "2026-11-07T15:05:12.133Z",
+  "report": {
+    "result": "pass",
+    "summary": "Firmware built successfully for esp32s31 (Korvo-1 board voice HA controller); no compile errors.",
+    "report": {
+      "status": "success",
+      "buildId": "cb:zerocode-build-lambda:6297a845-df37-437e-a77d-be9cbf50a7af",
+      "target": "esp32s31",
+      "board": "esp32-s31-korvo-1",
+      "firmwareSize": "0x2cb200 (2929152 B)",
+      "flashUsage": "app partition 0x380000 (3670016 B); 0xb4e00 (740864 B) = 20% free; bootloader 0x5700 (22272 B), 9% free",
+      "ramUsage": "not reported in build output (no static DRAM/IRAM summary line in log tail)",
+      "binaryPath": "firmware/build/zerocode_ai_firmware.bin",
+      "mergedImage": "firmware/build/merged_flash.bin (0xa092c7 bytes, flash at 0x0)",
+      "warnings": [
+        "IDF component-validation CMake warnings (upstream IDF, not project code): esp_wifi privately includes wpa_supplicant/src and wpa_supplicant/esp_supplicant/src; recommends adding PRIV_REQUIRES/PRIV_INCLUDE_DIRS. Harmless, pre-existing in ESP-IDF."
+      ],
+      "notes": [
+        "Partition layout generated with OTA (ota_0/ota_1 3584K each), 3432K spiffs model partition for esp-sr wake word, 48K nvs, 24K fctry nvs.",
+        "Flash command includes srmodels.bin at 0x720000, consistent with wake-word feature (f11).",
+        "All app components configured and linked: app_audio, app_config, app_console, app_display, app_driver, app_logic, app_mqtt, app_trace, app_update, app_utils, app_webui."
+      ]
+    }
+  }
+}
