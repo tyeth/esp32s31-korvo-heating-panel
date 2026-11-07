@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <esp_console.h>
 #include <esp_event.h>
 #include <esp_netif.h>
@@ -170,17 +171,37 @@ static void mqtt_start_client(void)
     ESP_LOGI(TAG, "MQTT connecting to %s", s_uri);
 }
 
+/* The retry runs on the esp_timer task, never on the event task. */
+#define RETRY_BACKOFF_S 30
+static esp_timer_handle_t s_retry_timer = NULL;
+
+static void wifi_retry_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "Wi-Fi reconnect attempt");
+    esp_wifi_connect();
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     (void)arg; (void)event_data;
     if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "Wi-Fi disconnected — retrying");
-        /* 30 s between attempts: a router that is down does not need to be
-         * hammered, and the panel keeps showing its last known values. */
-        vTaskDelay(pdMS_TO_TICKS(30000));
-        esp_wifi_connect();
+        ESP_LOGW(TAG, "Wi-Fi disconnected — retrying in %d s", RETRY_BACKOFF_S);
+        /* Never sleep on the event task: every other default-loop handler
+         * (IP events, mdns, httpd) waits behind it. The retry is one shot. */
+        if (s_retry_timer == NULL) {
+            const esp_timer_create_args_t args = {
+                .callback = &wifi_retry_cb,
+                .name = "mqtt_wifi_retry",
+            };
+            esp_timer_create(&args, &s_retry_timer);
+        }
+        if (s_retry_timer) {
+            esp_timer_stop(s_retry_timer);
+            esp_timer_start_once(s_retry_timer, (uint64_t)RETRY_BACKOFF_S * 1000000ULL);
+        }
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ESP_LOGI(TAG, "Wi-Fi got IP");
         mqtt_start_client();
@@ -199,7 +220,105 @@ static void mqtt_wifi_start(void)
     s_wifi_started = true;
 }
 
-/* ── console config: the onboarding surface ───────────────────────── */
+/* ── SoftAP onboarding ────────────────────────────────────────────────
+ *
+ * The spec's commissioning is "join the panel's own access point, open the
+ * settings page, enter Wi-Fi and the broker". That link is the SoftAP below:
+ * it runs only while the panel has no Wi-Fi credentials, alongside the station
+ * interface (APSTA), and is withdrawn as soon as the user saves a network.
+ * Nothing else in the product owns the radio, so it lives here, with the rest
+ * of the block's Wi-Fi.
+ */
+#define ONBOARD_AP_PREFIX      "Korvo-Heating"
+#define ONBOARD_AP_PASS        "heatpanel"   /* >= 8 chars: WPA2 */
+#define ONBOARD_AP_TIMEOUT_S   300           /* off after 5 min idle, on again on button */
+
+static esp_netif_t *s_ap_netif = NULL;
+static bool s_ap_up = false;
+static char s_ap_ssid[33] = {0};
+static esp_timer_handle_t s_ap_timer = NULL;
+
+void app_mqtt_ap_ssid(char *buf, size_t len)
+{
+    snprintf(buf, len, "%s", s_ap_ssid[0] ? s_ap_ssid : "");
+}
+
+bool app_mqtt_ap_active(void)
+{
+    return s_ap_up;
+}
+
+static void ap_stop_cb(void *arg)
+{
+    (void)arg;
+    if (!s_ap_up) return;
+    ESP_LOGI(TAG, "SoftAP %s idle for %d s — closed (the SET button brings it back)",
+             s_ap_ssid, ONBOARD_AP_TIMEOUT_S);
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) ESP_LOGW(TAG, "SoftAP close failed: %s", esp_err_to_name(err));
+    s_ap_up = false;
+}
+
+void app_mqtt_ap_start(void)
+{
+    if (s_wifi_started && s_ap_up) {
+        /* Already serving: just keep it awake. */
+        if (s_ap_timer) {
+            esp_timer_stop(s_ap_timer);
+            esp_timer_start_once(s_ap_timer, (uint64_t)ONBOARD_AP_TIMEOUT_S * 1000000ULL);
+        }
+        return;
+    }
+
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s-%02X%02X", ONBOARD_AP_PREFIX, mac[4], mac[5]);
+
+    if (!s_ap_netif) {
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+        if (s_ap_netif == NULL) {
+            ESP_LOGE(TAG, "SoftAP netif not created");
+            return;
+        }
+    }
+
+    wifi_config_t ap = {};
+    strlcpy((char *)ap.ap.ssid, s_ap_ssid, sizeof(ap.ap.ssid));
+    ap.ap.ssid_len = (uint8_t)strlen(s_ap_ssid);
+    strlcpy((char *)ap.ap.password, ONBOARD_AP_PASS, sizeof(ap.ap.password));
+    ap.ap.channel = 6;
+    ap.ap.max_connection = 2;
+    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+
+    if (!s_wifi_started) {
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
+        ESP_ERROR_CHECK(esp_wifi_start());
+        s_wifi_started = true;
+    } else {
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    }
+
+    if (s_ap_timer == NULL) {
+        const esp_timer_create_args_t args = { .callback = &ap_stop_cb, .name = "mqtt_ap_idle" };
+        esp_timer_create(&args, &s_ap_timer);
+    }
+    if (s_ap_timer) {
+        esp_timer_stop(s_ap_timer);
+        esp_timer_start_once(s_ap_timer, (uint64_t)ONBOARD_AP_TIMEOUT_S * 1000000ULL);
+    }
+    s_ap_up = true;
+    ESP_LOGI(TAG, "SoftAP '%s' (password '%s') — open http://korvo-heating.local/settings",
+             s_ap_ssid, ONBOARD_AP_PASS);
+    heating_web_announce();
+}
+
+/* No stored Wi-Fi credentials: the panel has no link of its own yet. */
+bool app_mqtt_wifi_missing(void)
+{
+    return s_ssid[0] == 0;
+}
 
 static void mqtt_load_config(void)
 {
@@ -233,6 +352,13 @@ esp_err_t app_mqtt_set_wifi(const char *ssid, const char *password)
     if (err != ESP_OK) return err;
     strlcpy(s_ssid, ssid, sizeof(s_ssid));
     strlcpy(s_pass, password, sizeof(s_pass));
+    /* Credentials stored: the onboarding link has done its job. */
+    if (s_ap_up) {
+        esp_err_t ap_err = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (ap_err != ESP_OK) ESP_LOGW(TAG, "SoftAP close failed: %s", esp_err_to_name(ap_err));
+        s_ap_up = false;
+        if (s_ap_timer) esp_timer_stop(s_ap_timer);
+    }
     if (s_wifi_started) {
         wifi_config_t wc = {};
         strlcpy((char *)wc.sta.ssid, s_ssid, sizeof(wc.sta.ssid));
@@ -434,12 +560,21 @@ esp_err_t app_mqtt_init(void)
     setup_cmd.func = &mqtt_setup_cmd;
     app_console_register_cmd(&setup_cmd);
 
-    mqtt_load_config();
+    /* Until the radio exists the settings page cannot be reached, so this is
+     * where the very first connection starts. Never aborts boot: an
+     * unconfigured panel still shows its dashboard and takes the console. */
     if (s_ssid[0] == 0 || s_uri[0] == 0) {
-        /* Unconfigured is a valid state — never block boot. */
-        ESP_LOGW(TAG, "MQTT not configured — run: mqtt-setup (guided), or mqtt-wifi <ssid> <pass>, then mqtt-broker <uri>");
+        ESP_LOGW(TAG, "MQTT not configured — the dashboard runs, but the settings page and "
+                      "the TRVs wait for Wi-Fi; set it: mqtt-wifi <ssid> <pass>, then "
+                      "mqtt-broker <uri>");
     }
     mqtt_wifi_start();
+
+    /* The panel has no Wi-Fi of its own yet: serve the settings page over its
+     * own access point instead (spec: SoftAP + mDNS onboarding). */
+    if (app_mqtt_wifi_missing()) {
+        app_mqtt_ap_start();
+    }
 
     ESP_LOGI(TAG, "MQTT initialized (node %s)", s_node_id);
     return ESP_OK;

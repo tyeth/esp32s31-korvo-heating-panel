@@ -10,8 +10,11 @@
  * The vocabulary is assembled at boot — it names the rooms the settings page
  * may have renamed — and registered with the voice framework as individual
  * phrases (the documented per-word API, not one fixed sdkconfig command set).
- * A recognised phrase id comes back here; the outcome lands on the screen
- * (there are no spoken replies).
+ * heating_voice_register() is called by app_audio_init() between its
+ * esp_mn_commands_clear() and esp_mn_commands_update(), and a recognised id
+ * comes back to heating_voice_apply_command().
+ *
+ * The outcome lands on the screen: there are no spoken replies.
  */
 
 #include "heating.h"
@@ -27,15 +30,21 @@
 static const char *TAG = "heating_voice";
 
 /* Phrase ids: four consecutive per room (a fixed target said four ways), then
- * the relative commands. One id range per room keeps the dispatch short. */
+ * the relative commands and the two rooms with no valve. */
 #define VOICE_ID_SET_BASE      1600
 #define VOICE_ID_SET_VARIANTS  4
-#define VOICE_ID_WARM_UP       (VOICE_ID_SET_BASE + HEATING_ROOMS * VOICE_ID_SET_VARIANTS)
+#define VOICE_ID_NO_TRV_BASE   (VOICE_ID_SET_BASE + HEATING_ROOMS * VOICE_ID_SET_VARIANTS)
+#define VOICE_ID_NO_TRV_COUNT  2
+#define VOICE_ID_WARM_UP       (VOICE_ID_NO_TRV_BASE + VOICE_ID_NO_TRV_COUNT)
 #define VOICE_ID_COOL_DOWN     (VOICE_ID_WARM_UP + 1)
 #define VOICE_ID_CANCEL        (VOICE_ID_WARM_UP + 2)
 
-#define VOICE_MAX_PHRASES      (HEATING_ROOMS * VOICE_ID_SET_VARIANTS + 3)
+#define VOICE_MAX_PHRASES      (HEATING_ROOMS * VOICE_ID_SET_VARIANTS + VOICE_ID_NO_TRV_COUNT + 3)
 #define VOICE_PHRASE_MAX       64
+
+/* The rooms that exist in the house but carry no smart TRV — naming one gets
+ * "Kitchen has no smart TRV" instead of silence (spec failureModes). */
+static const char *const k_unheated[VOICE_ID_NO_TRV_COUNT] = { "Kitchen", "Bedroom" };
 
 typedef struct {
     int16_t     id;
@@ -63,12 +72,15 @@ static void phrase_text(int i, char *buf, size_t len)
         "%s 21 and a half",
         "%s 22",
     };
-    if (i < HEATING_ROOMS * VOICE_ID_SET_VARIANTS) {
+    int set_n = HEATING_ROOMS * VOICE_ID_SET_VARIANTS;
+    if (i < set_n) {
         snprintf(buf, len, k_variants[i % VOICE_ID_SET_VARIANTS], s_table[i].room);
-        return;
+    } else if (i < set_n + VOICE_ID_NO_TRV_COUNT) {
+        snprintf(buf, len, "set the %s to 21", s_table[i].room);
+    } else {
+        int rel = i - (set_n + VOICE_ID_NO_TRV_COUNT);
+        snprintf(buf, len, "%s", rel == 0 ? "plus one" : (rel == 1 ? "minus one" : "cancel"));
     }
-    int rel = i - HEATING_ROOMS * VOICE_ID_SET_VARIANTS;
-    snprintf(buf, len, "%s", rel == 0 ? "plus one" : (rel == 1 ? "minus one" : "cancel"));
 }
 
 static void build_table(void)
@@ -81,6 +93,11 @@ static void build_table(void)
             n++;
         }
     }
+    for (int i = 0; i < VOICE_ID_NO_TRV_COUNT; i++) {
+        s_table[n].id = (int16_t)(VOICE_ID_NO_TRV_BASE + i);
+        s_table[n].room = k_unheated[i];
+        n++;
+    }
     s_table[n++] = { VOICE_ID_WARM_UP,   NULL };
     s_table[n++] = { VOICE_ID_COOL_DOWN, NULL };
     s_table[n++] = { VOICE_ID_CANCEL,    NULL };
@@ -88,9 +105,10 @@ static void build_table(void)
 }
 
 /**
- * Register the vocabulary before the voice framework updates its model. Called
- * from the audio framework's command-registration slot; a no-op after the
- * first call so a failed voice start cannot leave the list half-built.
+ * Called from app_audio_init() between its esp_mn_commands_clear() and
+ * esp_mn_commands_update(): everything added here becomes the recognised
+ * vocabulary. A no-op after the first call, so a failed voice start cannot
+ * leave the list half-built.
  */
 esp_err_t heating_voice_register(void)
 {
@@ -122,7 +140,11 @@ static void apply(int idx, int16_t tenth)
     switch (heating_request_target(idx, tenth)) {
         case HEATING_REQ_OK: {
             char msg[64];
-            int16_t t = heating_room_target_ui(room);
+            /* Report the value that went on the wire — the card itself only
+             * moves when the TRV reports back. */
+            int16_t t = (int16_t)(((tenth + HEATING_STEP_TENTH / 2) / HEATING_STEP_TENTH) * HEATING_STEP_TENTH);
+            if (t < HEATING_MIN_TENTH) t = HEATING_MIN_TENTH;
+            if (t > HEATING_MAX_TENTH) t = HEATING_MAX_TENTH;
             snprintf(msg, sizeof(msg), "%s \xE2\x86\x92 %d.%d\xC2\xB0" "C",
                      room->cfg.name, (int)(t / 10), (int)((t % 10 + 10) % 10));
             heating_ui_banner(msg);
@@ -143,7 +165,8 @@ static void apply(int idx, int16_t tenth)
 /* Called by the audio framework for one recognised phrase id. */
 void heating_voice_apply_command(int phrase_id)
 {
-    if (!s_registered) return;                 /* voice came up without us */
+    if (!s_registered) return;                 /* a different audio build */
+    heating_ui_listening(false);               /* the window closes on a match */
 
     if (phrase_id == VOICE_ID_CANCEL) {
         heating_ui_banner("Cancelled");
@@ -156,21 +179,32 @@ void heating_voice_apply_command(int phrase_id)
         apply(s_sel_room, (int16_t)(heating_room_target_ui(room) + step));
         return;
     }
+    if (phrase_id >= VOICE_ID_NO_TRV_BASE && phrase_id < VOICE_ID_NO_TRV_BASE + VOICE_ID_NO_TRV_COUNT) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%s has no smart TRV", k_unheated[phrase_id - VOICE_ID_NO_TRV_BASE]);
+        heating_ui_banner(msg);
+        return;
+    }
     int rel = phrase_id - VOICE_ID_SET_BASE;
     if (rel < 0 || rel >= HEATING_ROOMS * VOICE_ID_SET_VARIANTS) return;
-    int room_idx = rel / VOICE_ID_SET_VARIANTS;
     static const int16_t k_tenth[VOICE_ID_SET_VARIANTS] = { 210, 215, 215, 220 };
-    apply(room_idx, k_tenth[rel % VOICE_ID_SET_VARIANTS]);
+    apply(rel / VOICE_ID_SET_VARIANTS, k_tenth[rel % VOICE_ID_SET_VARIANTS]);
 }
 
-/* Timeout with nothing recognised: the window closes, the screen says so. */
+/* ── the audio framework's other hooks ───────────────────────────────── */
+
+void heating_voice_on_event(int listening)
+{
+    heating_ui_listening(listening != 0);
+    if (listening) {
+        heating_ui_banner("Listening\xE2\x80\xA6");
+    }
+}
+
+/* The window closed without a recognised command (timeout or a second
+ * press): the spec's 3 s explanation, and the strip back to its idle state. */
 void heating_voice_not_understood(void)
 {
     heating_ui_listening(false);
-}
-
-int heating_voice_vocabulary(int16_t *out, int max)
-{
-    (void)out; (void)max;
-    return s_table_n;
+    heating_ui_banner("Sorry, not understood");
 }

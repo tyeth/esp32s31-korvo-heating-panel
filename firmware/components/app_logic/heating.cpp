@@ -9,8 +9,9 @@
  * and the air sensors last reported, and the setpoint path out to the broker.
  *
  * One number is displayed everywhere — the target the TRV itself reports back.
- * A setpoint this panel publishes is only remembered (for the duplicate
- * guard), never shown as if it had been applied.
+ * A setpoint this panel publishes is only remembered (for the duplicate guard),
+ * never shown as if it had been applied; the card follows the TRV's next state
+ * message.
  */
 
 #include "heating.h"
@@ -48,6 +49,10 @@ static const char *const k_key_trv[HEATING_ROOMS]  = { "r0trv",  "r1trv",  "r2tr
 static const char *const k_key_sensor[HEATING_ROOMS] = { "r0snr", "r1snr", "r2snr", "r3snr" };
 static const char *const k_key_last[HEATING_ROOMS] = { "r0last", "r1last", "r2last", "r3last" };
 
+/* Room names other than the owner's four, so "set the kitchen to 21" can be
+ * answered with "Kitchen has no smart TRV" instead of silence. */
+static const char *const k_unheated_names[] = { "Kitchen", "Bedroom" };
+
 static heating_room_t s_rooms[HEATING_ROOMS];
 static volatile bool s_online = false;
 
@@ -79,7 +84,8 @@ static bool parse_tenth(const char *s, const char *end, int16_t *out)
     if (s < end && (*s == '.' || *s == ',')) {
         s++;
         int digits = 0;
-        while (s < end && *s >= '0' && *s <= '9' && digits < 3) { frac = frac * 10 + (*s - '0'); s++; digits++; any = true; }
+        while (s < end && *s >= '0' && *s <= '9' && digits < 3) { frac = frac * 10 + (*s - '0'); s++; digits++; }
+        any = true;
     }
     if (!any) return false;
     long tenth = whole * 10 + frac;          /* at most one displayed decimal */
@@ -135,6 +141,8 @@ esp_err_t heating_init(void)
     for (int i = 0; i < HEATING_ROOMS; i++) {
         memset(&s_rooms[i], 0, sizeof(s_rooms[i]));
         s_rooms[i].cfg = k_defaults[i];
+        /* Until a TRV reports, the card starts on the last setpoint this panel
+         * sent (feature f13: the saved targets come up straight away). */
         s_rooms[i].read_target = 200;
         s_rooms[i].last_pub_tenth = 200;
     }
@@ -159,6 +167,22 @@ esp_err_t heating_init(void)
     ESP_LOGI(TAG, "room table loaded (%s / %s / %s / %s)",
              s_rooms[0].cfg.name, s_rooms[1].cfg.name, s_rooms[2].cfg.name, s_rooms[3].cfg.name);
     return ESP_OK;
+}
+
+void heating_load_targets(void)
+{
+    /* Same table, same NVS: this exists so the first connect can re-read the
+     * saved targets after the dashboard went up without them. */
+    nvs_handle_t h;
+    if (nvs_open(HEATING_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        int16_t last = 0;
+        if (nvs_get_i16(h, k_key_last[i], &last) == ESP_OK) {
+            s_rooms[i].last_pub_tenth = last;
+            if (!s_rooms[i].target.valid) s_rooms[i].read_target = last;
+        }
+    }
+    nvs_close(h);
 }
 
 esp_err_t heating_save_cfg(void)
@@ -220,8 +244,6 @@ int16_t heating_room_target_ui(const heating_room_t *room)
 
 void heating_mark_all_stale(void)
 {
-    /* The clock restarts on the wire, not on the readings: greying is decided
-     * from each reading's own age, so nothing to do but re-render. */
     heating_ui_invalidate();
 }
 
@@ -267,6 +289,7 @@ heating_req_result_t heating_request_target(int idx, int16_t tenth)
     }
     room->last_pub_tenth = tenth;
     room->last_pub_ms = now;
+    /* Nothing is claimed on screen: the card follows the TRV's own report. */
     ESP_LOGI(TAG, "%s -> %s  %s", room->cfg.name, value, room->cfg.trv_topic);
     return HEATING_REQ_OK;
 }
@@ -314,6 +337,8 @@ void heating_on_mqtt_message(const char *topic, int topic_len, const char *data,
             } else {
                 apply_payload(&room->room, data, data_len, "temperature");
             }
+            /* An incoming message is one of the spec's wake sources. */
+            heating_ui_touch_activity();
             heating_ui_invalidate();
             return;
         }
@@ -333,8 +358,9 @@ void heating_broker_ready(bool online)
         return;
     }
 
-    /* Every room transport is one zigbee2mqtt state topic. Subscribing twice
-     * after a reconnect is harmless; missing one is a frozen card. */
+    /* A fresh session: the cards start from the saved targets until the TRVs
+     * report, then every room's one zigbee2mqtt state topic is subscribed. */
+    heating_load_targets();
     for (int i = 0; i < HEATING_ROOMS; i++) {
         if (s_rooms[i].cfg.trv_topic[0]) app_mqtt_subscribe(s_rooms[i].cfg.trv_topic);
         if (s_rooms[i].cfg.sensor_topic[0]) app_mqtt_subscribe(s_rooms[i].cfg.sensor_topic);
@@ -353,9 +379,10 @@ void heating_factory_reset(void)
     esp_restart();
 }
 
-/* Re-read the table from NVS after a settings-page save cleared the cache. */
 void heating_reload_cfg(void)
 {
-    heating_init();
+    /* Only the card targets need re-reading: the table itself is in RAM and
+     * was just written by the settings page. */
+    heating_load_targets();
     heating_ui_invalidate();
 }

@@ -125,8 +125,15 @@ static void zc_wdt_init(void)
 
 void diagnostics_logic_init(void)
 {
-    zc_clock_init();
     zc_boot_reason_init();
     zc_boot_cnt_init();
     zc_wdt_init();
+}
+
+/* app_main calls this once the network stack exists (its own transport block
+ * creates the default event loop) — not at behaviour time, where the clock
+ * would be started before there is any IP stack to sync it. */
+void diagnostics_clock_init(void)
+{
+    zc_clock_init();
 }

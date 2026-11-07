@@ -118,18 +118,35 @@ static void set_strip(uint8_t hue, uint8_t sat, uint8_t bri)
     v.b = true; app_driver_set_param(APP_DRIVER_PARAM_POWER, v, APP_DRIVER_SOURCE_LOCAL);
 }
 
+static void strip_off(void)
+{
+    app_driver_param_val_t v = {};
+    v.b = false;
+    app_driver_set_param(APP_DRIVER_PARAM_POWER, v, APP_DRIVER_SOURCE_LOCAL);
+}
+
+/* The spec's four states, in priority order. A refused command while offline
+ * flashes red for its second and then returns to the idle colour (dim white,
+ * still connecting) — never green, and never a POWER off/on cycle per tap. */
 static void strip_idle(void)
 {
-    if (s_listening)      set_strip(HUE_AMBER, SAT_MAX, BRI_DAY);
-    else if (s_refused)   set_strip(HUE_RED,   SAT_MAX, BRI_DAY);
-    else if (heating_online()) set_strip(HUE_GREEN, SAT_MAX, BRI_DAY);
-    else if (app_mqtt_configured()) set_strip(0, 0, BRI_DIM);   /* connecting */
-    else                  set_strip(0, 0, 0);                   /* not set up */
+    if (s_listening)                 set_strip(HUE_AMBER, SAT_MAX, BRI_DAY);
+    else if (s_refused)              set_strip(HUE_RED,   SAT_MAX, BRI_DAY);
+    else if (heating_online())       set_strip(HUE_GREEN, SAT_MAX, BRI_DAY);
+    else if (app_mqtt_configured())  set_strip(0, 0, BRI_DIM);   /* connecting */
+    else                             strip_off();                /* not set up */
 }
 
 void heating_ui_sync_online(void)
 {
-    if (!s_refused && !s_listening) strip_idle();
+    /* Re-evaluated on every broker transition, not only on a rejection. */
+    strip_idle();
+}
+
+/* Until the Wi-Fi radio is up there is nothing to connect to: strip off. */
+void heating_web_announce(void)
+{
+    strip_idle();
 }
 
 static void red_timer_cb(void *arg)
@@ -144,6 +161,7 @@ void heating_ui_rejected(void)
     s_refused = true;
     strip_idle();
     heating_ui_rejected_ui();
+    /* red for one second, then back to the idle colour */
     if (s_red_timer) {
         esp_timer_stop(s_red_timer);
         esp_timer_start_once(s_red_timer, 1000 * 1000);
@@ -154,27 +172,26 @@ void heating_ui_rejected(void)
 
 void heating_ui_listening(bool listening)
 {
+    bool was = s_listening;
     s_listening = listening;
     strip_idle();
     heating_ui_listening_ui(listening);
+    if (was && !listening && s_listen_timer) {
+        /* The window closed (a recognised command, a second press or the 10 s
+         * timeout) — nothing else keeps the countdown running. */
+        esp_timer_stop(s_listen_timer);
+    }
 }
 
+/* Called when the 10 s window ends with no recognised command. */
 static void listen_timeout_cb(void *arg)
 {
     (void)arg;
-    /* Nothing recognised in ten seconds: the window closes silently. */
-    heating_ui_listening(false);
-    heating_ui_banner("");
     heating_voice_not_understood();
 }
 
-void heating_voice_on_event(int listening)
-{
-    heating_ui_listening(listening != 0);
-    if (listening) {
-        heating_ui_banner("Listening…");
-    }
-}
+/* heating_voice_on_event() lives in heating_voice.cpp with the rest of the
+ * audio hooks. */
 
 /* ── the front buttons ───────────────────────────────────────────────── */
 
@@ -241,24 +258,49 @@ static void on_mode_release(void *arg, void *usr_data)
     combo_eval();
 }
 
-/* Push-to-talk on the board's boot button: one press, one listening window. */
-void boot_btn_on_single_click(void)
+/* One push-to-talk window: opens the mic for 10 s, a second press closes it.
+ * Shared by SET and BOOT, the two documented triggers. */
+static void push_to_talk(void)
 {
     heating_ui_touch_activity();
     if (s_listening) {
-        if (s_listen_timer) esp_timer_stop(s_listen_timer);
         heating_ui_listening(false);
         return;
     }
     heating_ui_listening(true);
-    heating_ui_banner("Listening…");
+    heating_ui_banner("Listening\xE2\x80\xA6");
     if (s_listen_timer) esp_timer_start_once(s_listen_timer, (uint64_t)LISTEN_MS * 1000);
 }
 
-/* Long press on the boot button: ask zigbee2mqtt to permit a device. */
+static void on_set_click(void *arg, void *usr_data)
+{
+    (void)arg; (void)usr_data;
+    /* A click that was part of the SET+MODE hold never reaches here — the
+     * reset has restarted the panel by then. */
+    push_to_talk();
+}
+
+/* Push-to-talk on the board's boot button: one press, one listening window. */
+void boot_btn_on_single_click(void)
+{
+    push_to_talk();
+}
+
+/* Long press on the boot button: no Wi-Fi stored yet means there is no link
+ * to publish on, so it (re)opens the onboarding access point instead; on a
+ * configured panel it asks zigbee2mqtt to permit a device. */
 void boot_btn_on_long_press(void)
 {
     heating_ui_touch_activity();
+    if (app_mqtt_wifi_missing()) {
+        app_mqtt_ap_start();
+        char ssid[33];
+        app_mqtt_ap_ssid(ssid, sizeof(ssid));
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Join Wi-Fi \"%s\" for settings", ssid);
+        heating_ui_banner(msg);
+        return;
+    }
     if (heating_permit_join() == ESP_OK) {
         heating_ui_banner("Permit join for 4 minutes sent");
     } else {
@@ -290,11 +332,15 @@ static void bind_adc_buttons(void)
 
     iot_button_register_cb(s_combo.set, BUTTON_PRESS_DOWN, NULL, on_set_press, NULL);
     iot_button_register_cb(s_combo.set, BUTTON_PRESS_UP, NULL, on_set_release, NULL);
+    /* SET is the documented push-to-talk button: one click opens the mic, the
+     * 10 s window closes it again. MODE keeps its own press/release so the
+     * two held together still reach the factory-reset countdown. */
+    iot_button_register_cb(s_combo.set, BUTTON_SINGLE_CLICK, NULL, on_set_click, NULL);
     if (s_combo.mode) {
         iot_button_register_cb(s_combo.mode, BUTTON_PRESS_DOWN, NULL, on_mode_press, NULL);
         iot_button_register_cb(s_combo.mode, BUTTON_PRESS_UP, NULL, on_mode_release, NULL);
     }
-    ESP_LOGI(TAG, "front buttons bound (%d) — SET+MODE %d ms = factory reset",
+    ESP_LOGI(TAG, "front buttons bound (%d) — SET = push-to-talk, SET+MODE %d ms = factory reset",
              (int)btns->num_buttons, FR_HOLD_MS);
 }
 
@@ -313,7 +359,7 @@ esp_err_t app_logic_init(void)
     heating_console_register();
     heating_broker_ready(false);
 
-    /* "Connecting" until the broker session is up. */
+    /* "Connecting" until the broker session is up (off before Wi-Fi exists). */
     strip_idle();
 
     ESP_LOGI(TAG, "heating panel logic up");

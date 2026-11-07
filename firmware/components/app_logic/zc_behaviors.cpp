@@ -10,6 +10,8 @@ static const char *TAG = "zc_behaviors";
 void control_logic_init(void);
 void diagnostics_logic_init(void);
 void console_logic_init(void);
+/** The SNTP clock, started once the network stack is up (from app_main). */
+void diagnostics_clock_init(void);
 
 esp_err_t zc_behaviors_init(void)
 {

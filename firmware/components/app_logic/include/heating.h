@@ -89,6 +89,10 @@ int16_t heating_room_target_ui(const heating_room_t *room);
 /** Restart the staleness clock for every reading (used on a transport change). */
 void heating_mark_all_stale(void);
 
+/** The setpoint last published to each TRV, before the first connect uses it
+ *  as that room's card target. */
+void heating_load_targets(void);
+
 /* ── setpoints ───────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -121,8 +125,10 @@ void heating_broker_ready(bool online);
 
 /**
  * The voice vocabulary. heating_voice_register() runs from the audio
- * framework's command-registration slot (before its model is updated); a
- * recognised phrase id is handed back to heating_voice_apply_command().
+ * framework's command-registration slot — between its esp_mn_commands_clear()
+ * and esp_mn_commands_update(), inside app_audio_init() — and
+ * heating_voice_apply_command() / heating_voice_on_event() are the audio
+ * framework's command and listening-state hooks.
  */
 esp_err_t heating_voice_register(void);
 void heating_voice_apply_command(int phrase_id);
@@ -158,6 +164,13 @@ void heating_ui_rejected_ui(void);
 esp_err_t heating_ui_init(void);
 /** A press anywhere (touch or button) restores full brightness. */
 void heating_ui_touch_activity(void);
+
+/** MQTT: the product's own state handler and transport glue. */
+void heating_mqtt_install(void);
+/** The bridge session came up (true) or went away (false). */
+void heating_broker_ready(bool online);
+/** The Wi-Fi radio was started: the settings page can be reached. */
+void heating_web_announce(void);
 
 /** The settings page on port 80 (Wi-Fi, broker, room topics). */
 void heating_web_install(void);

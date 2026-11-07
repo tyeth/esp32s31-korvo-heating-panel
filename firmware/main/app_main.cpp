@@ -43,13 +43,8 @@
 
 static const char *TAG = "app_main";
 
-static void heating_task(void *arg)
-{
-    (void)arg;
-    esp_err_t err = heating_ui_init();
-    ESP_LOGI(TAG, "dashboard start: %s", esp_err_to_name(err));
-    vTaskDelete(NULL);
-}
+/* zc_behaviors.cpp's clock, started once the network stack exists. */
+void diagnostics_clock_init(void);
 
 extern "C" void app_main(void)
 {
@@ -71,19 +66,28 @@ extern "C" void app_main(void)
     /* The four rooms and their saved topics: everything below reads them. */
     ESP_ERROR_CHECK(heating_init());
 
-    /* The dashboard on the board's LCD, in its own task: a panel that will not
-     * come up must never hold the boot. */
-    xTaskCreate(heating_task, "heating_ui_start", 8192, NULL, 4, NULL);
+    /* The product's handler on the framework's MQTT session, installed before
+     * that session can exist. */
+    heating_mqtt_install();
 
     /* Initialize protocol solutions */
     /* Degrades rather than aborts: no PSRAM (or no `model` partition) leaves
      * voice unable to start, and a device whose other functions still work is
-     * better than one that reset-loops. app_audio_init logs the reason. */
+     * better than one that reset-loops. app_audio_init logs the reason; the
+     * panel's voice commands are registered from inside it. */
     {
         esp_err_t audio_err = app_audio_init();
         if (audio_err != ESP_OK) {
             ESP_LOGE(TAG, "voice disabled: %s", esp_err_to_name(audio_err));
         }
+    }
+
+    /* The dashboard on the board's LCD (the display framework brings LVGL and
+     * the touch up; this replaces its empty screen with the room cards). */
+    ESP_ERROR_CHECK(app_display_init());
+    esp_err_t ui_err = heating_ui_init();
+    if (ui_err != ESP_OK) {
+        ESP_LOGE(TAG, "dashboard unavailable: %s", esp_err_to_name(ui_err));
     }
 
     /* Wi-Fi SoftAP + mDNS + the settings page: the panel's own onboarding. */
@@ -95,6 +99,10 @@ extern "C" void app_main(void)
     /* Composed behaviors (generated, zc_behaviors.cpp) — before the product's
      * own logic, so it can rely on persistence, console, diagnostics being up */
     ESP_ERROR_CHECK(zc_behaviors_init());
+
+    /* The wall clock, after the transport block created the default event
+     * loop (SNTP runs on it). */
+    diagnostics_clock_init();
 
     /* Initialize business logic */
     ESP_ERROR_CHECK(app_logic_init());

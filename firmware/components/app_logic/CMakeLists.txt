@@ -17,7 +17,7 @@
 # does nothing. Whole-archive links every file the product put here.
 idf_component_register(
     SRCS "app_logic.cpp" "button_registry.cpp" "control.cpp" "diagnostics.cpp" "console.cpp" "zc_behaviors.cpp"
-         "heating.cpp" "heating_voice.cpp" "heating_ui.cpp" "heating_web.cpp"
+         "heating.cpp" "heating_voice.cpp" "heating_ui.cpp" "heating_web.cpp" "heating_mqtt.cpp"
     INCLUDE_DIRS "include"
     WHOLE_ARCHIVE
     PRIV_REQUIRES app_driver app_config app_utils app_mqtt app_webui app_display app_console

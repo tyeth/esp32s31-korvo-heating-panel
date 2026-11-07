@@ -18,6 +18,10 @@
  * The page re-points the panel's Wi-Fi and broker, so changes apply only to
  * the form this page posts (its `submit` button) or its permit-join button;
  * there is no other path into it.
+ *
+ * On a panel with no Wi-Fi stored the page is served over the MQTT block's
+ * onboarding access point (app_mqtt_ap_*); the access point's name is printed
+ * in the boot log; a BOOT long press brings it back after its idle timeout.
  */
 
 #include "heating.h"
@@ -30,6 +34,7 @@
 #include <string.h>
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -163,6 +168,7 @@ static void field(const char *key, const char *label, const char *value, const c
 
 static void render_page(bool saved)
 {
+    char line[(HEATING_TOPIC_MAX * 6) + 256];
     app_webui_chunk_begin("text/html; charset=utf-8");
     app_webui_send_chunk(
         "<!DOCTYPE html><html><head><meta name=viewport "
@@ -183,8 +189,20 @@ static void render_page(bool saved)
                              "a few seconds.</p>");
     }
     if (!app_mqtt_configured()) {
-        app_webui_send_chunk("<p style='padding:0 16px;color:#e0a06a'>Set Wi-Fi and the broker "
-                             "here: until both are filled in the panel stays offline.</p>");
+        char ap[33];
+        app_mqtt_ap_ssid(ap, sizeof(ap));
+        if (ap[0]) {
+            snprintf(line, sizeof(line),
+                     "<p style='padding:0 16px;color:#e0a06a'>Not online yet. On a fresh panel "
+                     "join the access point <b>%s</b> (the password is in the boot log) and "
+                     "load http://korvo-heating.local/settings, then set Wi-Fi and the broker "
+                     "here.</p>", ap);
+            app_webui_send_chunk(line);
+        } else {
+            app_webui_send_chunk("<p style='padding:0 16px;color:#e0a06a'>Set Wi-Fi and the "
+                                 "broker here: until both are filled in the panel stays "
+                                 "offline.</p>");
+        }
     }
 
     app_webui_send_chunk("<form method=post action='/settings'>");
@@ -240,6 +258,32 @@ static void render_message(const char *text)
 
 static void apply_form(void)
 {
+    /* Every field is validated against its destination before anything is
+     * written: an over-long topic on the page is refused as a whole, so the
+     * stored table never holds a silently truncated one. */
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        heating_room_t *r = heating_room(i);
+        char key[16];
+
+        snprintf(key, sizeof(key), "r%dname", i);
+        if (strlen(form_get(key)) >= sizeof(r->cfg.name)) {
+            ESP_LOGW(TAG, "%s: name too long (%d chars) — form refused", key, (int)strlen(form_get(key)));
+            return;
+        }
+        snprintf(key, sizeof(key), "r%dtrv", i);
+        if (strlen(form_get(key)) >= sizeof(r->cfg.trv_topic)) {
+            ESP_LOGW(TAG, "%s: topic too long (%d chars, max %d) — form refused",
+                     key, (int)strlen(form_get(key)), (int)sizeof(r->cfg.trv_topic) - 1);
+            return;
+        }
+        snprintf(key, sizeof(key), "r%dsensor", i);
+        if (strlen(form_get(key)) >= sizeof(r->cfg.sensor_topic)) {
+            ESP_LOGW(TAG, "%s: topic too long (%d chars, max %d) — form refused",
+                     key, (int)strlen(form_get(key)), (int)sizeof(r->cfg.sensor_topic) - 1);
+            return;
+        }
+    }
+
     /* Topics first: they are what makes a card work, and a broker edit below
      * restarts the client. */
     for (int i = 0; i < HEATING_ROOMS; i++) {
@@ -262,6 +306,8 @@ static void apply_form(void)
             r->cfg.sensor_topic[sizeof(r->cfg.sensor_topic) - 1] = '\0';
         }
     }
+    /* Saved BEFORE the transport below is touched, so a session that comes up
+     * during/right after the restart already sees the new table. */
     heating_save_cfg();
 
     if (form_get("broker")[0]) {
@@ -292,6 +338,13 @@ static esp_err_t settings_entry(void)
         total += n;
     }
     body[total] = '\0';
+
+    /* A body that did not fit would be applied a field short, and a half
+     * decoded topic is worse than a rejected form: change nothing. */
+    if (total >= (int)sizeof(body) - 1) {
+        render_message("Form too long \xE2\x80\x94 nothing was changed");
+        return ESP_OK;
+    }
     if (total > 0) form_parse(body);
 
     if (s_permit) {
@@ -301,7 +354,10 @@ static esp_err_t settings_entry(void)
         return ESP_OK;
     }
     if (s_submit) {
+        /* Applied here and now: the settings page is reached over the link the
+         * form configures, so nothing has to be restarted to keep it. */
         apply_form();
+        heating_reload_cfg();
         render_page(true);
         return ESP_OK;
     }

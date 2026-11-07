@@ -14,6 +14,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <esp_err.h>
 #include <mqtt_client.h>
 
@@ -85,6 +86,24 @@ void app_mqtt_set_data_handler(void (*handler)(const char *topic, int topic_len,
 /** Tell the block that the application's own session is up (true) or gone
  *  (false), so it can hold the session or re-attempt the connection. */
 void app_mqtt_set_online(bool online);
+
+/* ── SoftAP onboarding ───────────────────────────────────────────────────
+ *
+ * While no Wi-Fi credentials are stored the block serves its own access point
+ * so the settings page can be reached on a factory-fresh panel. Saving a
+ * network through app_mqtt_set_wifi() withdraws it.
+ */
+
+/** Whether any Wi-Fi network is stored. */
+bool app_mqtt_wifi_missing(void);
+
+/** Start (or keep alive) the onboarding access point. */
+void app_mqtt_ap_start(void);
+
+/** The access point's SSID (its fixed WPA2 password is in the boot log). */
+void app_mqtt_ap_ssid(char *buf, size_t len);
+
+bool app_mqtt_ap_active(void);
 
 #ifdef __cplusplus
 }

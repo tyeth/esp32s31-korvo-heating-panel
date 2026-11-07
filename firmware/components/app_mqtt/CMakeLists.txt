@@ -8,6 +8,6 @@
 idf_component_register(
     SRCS "app_mqtt.cpp"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES espressif__json_parser esp_wifi esp_netif esp_event nvs_flash app_driver app_config app_console app_logic console
+    PRIV_REQUIRES espressif__json_parser esp_wifi esp_netif esp_event nvs_flash esp_timer app_driver app_config app_console app_logic console
     REQUIRES espressif__mqtt
 )

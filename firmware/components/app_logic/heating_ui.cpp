@@ -29,14 +29,10 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include <lvgl.h>
 #include "esp_lvgl_port.h"
-#include <esp_lcd_touch.h>
-#include <esp_board_manager.h>
-#include <dev_lcd_touch.h>
 
 static const char *TAG = "heating_ui";
 
@@ -86,11 +82,8 @@ static int64_t      s_reject_until = 0;
 static int64_t      s_last_activity = 0;
 static bool         s_dimmed = false;
 
-/* Touch: the last coordinates and whether the finger is down. */
-static SemaphoreHandle_t s_touch_lock = NULL;
-static int  s_touch_x = -1;
-static int  s_touch_y = -1;
-static bool s_touch_pressed = false;
+/* Touch: the display framework's pointer device, sampled once per tick. */
+static lv_indev_t *s_touch_indev = NULL;
 
 static uint32_t now_ms(void)
 {
@@ -150,28 +143,18 @@ void heating_voice_seconds_left(int seconds)
 /* ── touch input ─────────────────────────────────────────────────────── */
 
 static void touch_hit(int x, int y);
+static void sample_touch(void);
 
-static void touch_read(lv_indev_t *indev, lv_indev_data_t *data)
+static void touch_sample_timer_cb(lv_timer_t *t)
 {
-    (void)indev;
-    int x, y;
-    bool pressed;
-    if (s_touch_lock) xSemaphoreTake(s_touch_lock, portMAX_DELAY);
-    x = s_touch_x;
-    y = s_touch_y;
-    pressed = s_touch_pressed;
-    if (s_touch_lock) xSemaphoreGive(s_touch_lock);
-
-    data->point.x = (x < 0) ? 0 : (int16_t)x;
-    data->point.y = (y < 0) ? 0 : (int16_t)y;
-    data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    (void)t;
+    if (s_ui_ready) sample_touch();
 }
 
 /**
- * Select-or-adjust on one tap. The GT1151 driver only reports coordinates (no
- * gesture events), so the panel decides here: a tap inside a non-selected
- * card selects it; a tap inside the selected card's left third lowers its
- * target by 0.5 °C, its right third raises it.
+ * Select-or-adjust on one tap — the spec's single active room: a tap inside a
+ * card selects it (and only its −/+ are live), a tap on the selected card's
+ * left or right third changes its target by 0.5 °C and publishes it.
  */
 static void touch_hit(int x, int y)
 {
@@ -412,11 +395,11 @@ static void paint_all(void)
     paint_dimming();
 }
 
-/* ── the UI task ─────────────────────────────────────────────────────── */
+/* ── painting / the LVGL timer ───────────────────────────────────────── */
 
-/* Timers (banner expiry, listening bar, the clock) and the interrupt-flagged
- * refresh all live in one LVGL timer: a FreeRTOS task cannot paint when the
- * framework started LVGL on its own task, so the LVGL task does it here. */
+/* Timers (banner expiry, listening bar, the clock, the dim decision) and the
+ * refresh flag all live in one LVGL timer: a FreeRTOS task cannot paint when
+ * the framework started LVGL on its own task, so the LVGL task does it here. */
 static void ui_timer_cb(lv_timer_t *t)
 {
     (void)t;
@@ -454,59 +437,38 @@ static void listen_timer_cb(lv_timer_t *t)
     }
 }
 
-/* The touch controller the board created, polled here and fed to LVGL as an
- * input device of our own (the display framework installs no widgets and no
- * input device; the panel is this product's). */
-static void touch_task(void *arg)
+/**
+ * The display framework already registered the board's GT1151 through
+ * lvgl_port_add_touch(), so that input device is the ONLY reader of the touch
+ * controller — a second reader would deliver every tap twice and a selection
+ * tap would turn into a setpoint change.
+ *
+ * Its coordinates are sampled once per tick and turned into the product's
+ * select / −+ gesture on release. The framework's own press/release events are
+ * deliberately unused (there is no public hook for them in this port).
+ */
+static void sample_touch(void)
 {
-    esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)arg;
-    /* The driver keeps the last coordinates after release, so the pressed
-     * position is kept here for the tap. */
-    int last_x = -1, last_y = -1;
+    if (s_touch_indev == NULL) return;
 
-    for (;;) {
-        esp_err_t err = esp_lcd_touch_read_data(tp);
-        if (err == ESP_OK) {
-            uint16_t x[1], y[1], strength[1];
-            uint8_t n = 0;
-            bool touched = esp_lcd_touch_get_coordinates(tp, x, y, strength, &n, 1);
-            bool was_pressed = s_touch_pressed;
+    static int last_x = -1, last_y = -1;
+    static bool was_pressed = false;
 
-            if (touched && n > 0) {
-                if (s_touch_lock) xSemaphoreTake(s_touch_lock, portMAX_DELAY);
-                s_touch_x = (int)x[0];
-                s_touch_y = (int)y[0];
-                s_touch_pressed = true;
-                if (s_touch_lock) xSemaphoreGive(s_touch_lock);
-                touch_activity();
-                last_x = s_touch_x;
-                last_y = s_touch_y;
-            } else if (was_pressed) {
-                if (s_touch_lock) xSemaphoreTake(s_touch_lock, portMAX_DELAY);
-                s_touch_pressed = false;
-                if (s_touch_lock) xSemaphoreGive(s_touch_lock);
-                /* Released: that is the tap. */
-                touch_hit(last_x, last_y);
-            }
+    /* The display framework's input device is itself driven from this same
+     * LVGL task, so at any moment its state IS the panel's. */
+    bool pressed = (lv_indev_get_state(s_touch_indev) == LV_INDEV_STATE_PRESSED);
+    if (pressed) {
+        lv_point_t p;
+        lv_indev_get_point(s_touch_indev, &p);
+        if (p.x >= 0 && p.y >= 0) {
+            last_x = p.x;
+            last_y = p.y;
+            touch_activity();
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+    } else if (was_pressed) {
+        touch_hit(last_x, last_y);       /* released: that is the tap */
     }
-}
-
-static void install_touch(esp_lcd_touch_handle_t tp)
-{
-    lv_indev_t *indev = lv_indev_create();
-    if (indev == NULL) {
-        ESP_LOGE(TAG, "touch: LVGL input device not created");
-        return;
-    }
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev, touch_read);
-    if (xTaskCreate(touch_task, "heating_touch", 4096, tp, 4, NULL) == pdPASS) {
-        ESP_LOGI(TAG, "touch input installed");
-    } else {
-        ESP_LOGE(TAG, "touch: task not started");
-    }
+    was_pressed = pressed;
 }
 
 esp_err_t heating_ui_init(void)
@@ -514,7 +476,6 @@ esp_err_t heating_ui_init(void)
     esp_err_t err = app_display_init();
     if (err != ESP_OK) return err;
 
-    s_touch_lock = xSemaphoreCreateMutex();
     s_last_activity = now_ms();
 
     /* app_display_init() has already run lvgl_port_init() by the time the
@@ -528,22 +489,23 @@ esp_err_t heating_ui_init(void)
     }
     build_screen();
     paint_all();
-    lv_timer_create(ui_timer_cb, 250, NULL);
-    lv_timer_create(listen_timer_cb, 1000, NULL);
-    s_ui_ready = true;
-    lvgl_port_unlock();
 
-    void *touch_h = NULL;
-    if (esp_board_manager_get_device_handle("lcd_touch", &touch_h) != ESP_OK || touch_h == NULL) {
-        ESP_LOGE(TAG, "board device 'lcd_touch' has no handle — touch disabled");
-    } else {
-        dev_lcd_touch_handles_t *h = (dev_lcd_touch_handles_t *)touch_h;
-        if (h->touch_handle == NULL) {
-            ESP_LOGE(TAG, "board device 'lcd_touch' carries no touch handle — touch disabled");
-        } else {
-            install_touch(h->touch_handle);
+    /* The framework's pointer device, if its touch came up. */
+    for (lv_indev_t *i = lv_indev_get_next(NULL); i != NULL; i = lv_indev_get_next(i)) {
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER) {
+            s_touch_indev = i;
+            break;
         }
     }
+    if (s_touch_indev == NULL) {
+        ESP_LOGW(TAG, "no touch input device — cards selectable, −/+ from voice only");
+    }
+
+    lv_timer_create(ui_timer_cb, 250, NULL);
+    lv_timer_create(listen_timer_cb, 1000, NULL);
+    lv_timer_create(touch_sample_timer_cb, 50, NULL);
+    s_ui_ready = true;
+    lvgl_port_unlock();
 
     ESP_LOGI(TAG, "dashboard up (%d rooms)", HEATING_ROOMS);
     return ESP_OK;

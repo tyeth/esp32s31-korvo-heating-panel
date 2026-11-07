@@ -1,6 +1,8 @@
 #include "app_audio.h"
 #include "app_driver.h"
 #include "app_config.h"
+#include "app_logic.h"
+#include "heating.h"
 
 #include <esp_log.h>
 #include <string.h>
@@ -70,15 +72,17 @@ size_t zc_audio_mic_read(int16_t *dest, size_t samples)
 /* Recognized phrase -> hardware. Device types own the cases. */
 static void audio_apply_command(int phrase_id)
 {
-    switch (phrase_id) {
+    /* The heating panel's vocabulary — registered below in
+     * audio_register_commands(), dispatched here. It owns every id it adds, so
+     * there is no other case to fall through to. */
+    heating_voice_apply_command(phrase_id);
+}
 
-    default:
-        break;
-    }
-    /* Reached only when no case claimed the phrase — every device-type case
-     * returns. A phrase registered with no matching case means the block's
-     * audio_commands_register and audio_command_cases disagree. */
-    ESP_LOGW(TAG, "phrase %d recognized but no device type claims it", phrase_id);
+/* The product's command vocabulary, added between the framework's clear() and
+ * update() so it becomes the model MultiNet recognises. */
+static void audio_register_commands(void)
+{
+    heating_voice_register();
 }
 
 /* Listening-state transitions. Behavior blocks hook these via
@@ -87,8 +91,9 @@ static void audio_apply_command(int phrase_id)
  * The audio analog of matter_event_cases / zigbee_signal_cases. */
 static void audio_on_event(int listening)
 {
-    (void)listening;
-
+    /* The panel turns this into its amber strip, the "Listening…" banner and
+     * the 10 s countdown bar. */
+    heating_voice_on_event(listening);
 }
 
 /* Hardware/param bus -> voice feedback. Device types may announce state here. */
@@ -159,6 +164,7 @@ static void audio_detect_task(void *arg)
             }
         } else if (st == ESP_MN_STATE_TIMEOUT) {
             ESP_LOGI(TAG, "no command heard — sleeping until next wake word");
+            heating_voice_not_understood();
         }
         listening = false;
         audio_on_event(0);
@@ -244,8 +250,9 @@ esp_err_t app_audio_init(void)
     }
 
     /* Phrases are registered at runtime, not from sdkconfig: the vocabulary is
-     * composed from whichever device types the product includes. */
+     * the product's (heating_voice_register, in app_logic). */
     esp_mn_commands_clear();
+    audio_register_commands();
 
     esp_mn_commands_update();
     s_mn->print_active_speech_commands(s_mn_data);
