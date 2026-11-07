@@ -1,0 +1,247 @@
+{
+  "agent": "code_review",
+  "seq": 7,
+  "savedAt": "2026-11-07T15:18:46.932Z",
+  "report": {
+    "result": "fail",
+    "summary": "All three previous criticals are fixed (voice vocabulary/lifecycle now wired through app_audio, MQTT data handler installed in app_main, SoftAP onboarding added) and the earlier warnings are addressed, but the rework introduced three regressions: the first SoftAP start latches s_wifi_started before the station is configured (station never comes up after commissioning), the factory-reset combo is stuck in mode_down, and drain-and-latch touch sampling turns every tap into a no-op.",
+    "report": {
+      "filesReviewed": [
+        "artifacts/004-code_review.json",
+        "artifacts/005-code_writing.json",
+        "artifacts/006-firmware_compilation.json",
+        "firmware/main/app_main.cpp",
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/components/app_audio/CMakeLists.txt",
+        "firmware/components/app_logic/heating_mqtt.cpp",
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_logic/heating.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/heating_voice.cpp",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/components/app_logic/diagnostics.cpp",
+        "firmware/components/app_logic/zc_behaviors.cpp",
+        "firmware/components/app_logic/console.cpp",
+        "firmware/components/app_logic/CMakeLists.txt",
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_mqtt/include/app_mqtt.h",
+        "firmware/components/app_mqtt/CMakeLists.txt",
+        "firmware/components/app_display/app_display.cpp",
+        "firmware/components/app_webui/app_webui.cpp"
+      ],
+      "previousFindingsStatus": [
+        {
+          "finding": "critical — voice vocabulary never registered / heating_voice_* never called",
+          "status": "fixed",
+          "evidence": "app_audio.cpp:76 audio_register_commands() = heating_voice_register(); app_audio.cpp:253-257 clear() then audio_register_commands() then esp_mn_commands_update(); app_audio.cpp:94-96 audio_on_event -> heating_voice_on_event; app_audio.cpp:167 timeout -> heating_voice_not_understood; app_audio.cpp:75 audio_apply_command -> heating_voice_apply_command; app_audio CMakeLists PRIV_REQUIRES app_logic."
+        },
+        {
+          "finding": "critical — no MQTT data handler installed",
+          "status": "fixed",
+          "evidence": "new heating_mqtt.cpp:24-27 heating_mqtt_install() -> app_mqtt_set_data_handler(on_message) -> heating_on_mqtt_message; called from app_main.cpp:70 before app_mqtt_init (app_main.cpp:97)."
+        },
+        {
+          "finding": "critical — no SoftAP onboarding",
+          "status": "fixed (implementation defective, see new finding)",
+          "evidence": "app_mqtt.cpp:223-315 app_mqtt_ap_start() (WIFI_MODE_APSTA, SSID Korvo-Heating-XXXX, WPA2 'heatpanel', 5 min idle timer); started from app_mqtt_init when app_mqtt_wifi_missing(); announced on the settings page heating_web.cpp:191-205; reopened by BOOT long press app_logic.cpp:336-348."
+        },
+        {
+          "finding": "warning — push-to-talk on BOOT rather than SET",
+          "status": "fixed",
+          "evidence": "app_logic.cpp:341 registers BUTTON_SINGLE_CLICK on handles[0] -> on_set_click -> push_to_talk(); BOOT keeps the same path."
+        },
+        {
+          "finding": "warning — strip re-asserts POWER / wrong offline colour",
+          "status": "fixed",
+          "evidence": "app_logic.cpp:132-142 strip_idle() with strip_off() when not configured, re-evaluated unconditionally in heating_ui_sync_online() (app_logic.cpp:145-149)."
+        },
+        {
+          "finding": "warning — second LVGL indev double-reads touch",
+          "status": "fixed as to the double reader, but the replacement gesture is broken (see new finding)",
+          "evidence": "heating_ui.cpp:447-468 sample_touch() reads the framework's indev (lv_indev_get_state/get_point) from its own 50 ms lv_timer (heating_ui.cpp:508); no lv_indev_create, no touch task."
+        },
+        {
+          "finding": "warning — settings form applied on httpd task / truncation",
+          "status": "fixed",
+          "evidence": "heating_web.cpp:261-290 field-length pre-check refuses the whole form; heating_web.cpp:341-344 over-long body refused; heating_save_cfg() before the transport setters."
+        },
+        {
+          "finding": "warning — dim ignored MQTT activity",
+          "status": "fixed",
+          "evidence": "heating.cpp:341-342 heating_on_mqtt_message() calls heating_ui_touch_activity()."
+        },
+        {
+          "finding": "info — no 'not understood' banner, no no-TRV answer",
+          "status": "fixed",
+          "evidence": "heating_voice.cpp:207-211 banner 'Sorry, not understood'; heating_voice.cpp:182-188 + vocabulary entries for Kitchen/Bedroom -> '<room> has no smart TRV'."
+        },
+        {
+          "finding": "info — vTaskDelay back-off on the event task",
+          "status": "fixed",
+          "evidence": "app_mqtt.cpp:174-201 one-shot esp_timer retry (RETRY_BACKOFF_S 30) instead of the blocking delay."
+        }
+      ],
+      "findings": [
+        {
+          "severity": "critical",
+          "area": "correctness",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 301,
+          "description": "app_mqtt_ap_start() latches s_wifi_started = true on the SoftAP path, but the station interface is never configured there (no esp_wifi_set_config(WIFI_IF_STA)). mqtt_wifi_start() returns early on s_wifi_started, so after the user saves Wi-Fi from the onboarding page no station credentials are ever applied and the panel never joins the home network.",
+          "failureScenario": "Factory-fresh panel: app_mqtt_init -> app_mqtt_wifi_missing() -> app_mqtt_ap_start() -> !s_wifi_started branch: set_mode(APSTA), set_config(WIFI_IF_AP), esp_wifi_start(), s_wifi_started = true. The user joins 'Korvo-Heating-XXXX' and posts the form: app_mqtt_set_wifi() closes the AP (mode STA) and, because s_wifi_started is true, sets the STA config and calls esp_wifi_disconnect()/esp_wifi_connect() — but at esp_wifi_start() time the STA interface had the blank default config, so the station never associates with the SSID. Result: settings are saved, the AP is gone and the panel is off the network until a power cycle (the STA is only configured at boot when s_ssid is already set).",
+          "evidence": "app_mqtt.cpp:294-301 (`if (!s_wifi_started) { ... esp_wifi_set_config(WIFI_IF_AP, &ap); esp_wifi_start(); s_wifi_started = true; }`); app_mqtt.cpp:216-220 mqtt_wifi_start() `if (s_wifi_started || s_ssid[0] == 0) return;`; app_mqtt.cpp:379-391 app_mqtt_set_wifi() takes the `s_wifi_started` branch and only calls esp_wifi_set_config(WIFI_IF_STA) there.",
+          "suggestedChange": "In app_mqtt_set_wifi(), when the station interface was never configured (an APSTA bring-up), apply the STA config and call esp_wifi_start()/esp_wifi_connect() for it, or track 'STA started' separately from 'AP started' so mqtt_wifi_start() runs on the configured path."
+        },
+        {
+          "severity": "critical",
+          "area": "correctness",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 234,
+          "description": "The factory-reset combination latches mode_down forever: the product binds its press/release callbacks to a second handle of the adc_button_group, not the one MODE's events come from. Only handles[0] (SET) is bound in control.cpp, so while SET is one of the group's buttons, releasing MODE never reaches on_mode_release(), s_combo.mode_down stays true, and combo_eval() arms the 10 s reset on the next SET press.",
+          "failureScenario": "User presses MODE, then SET, then releases both. on_mode_release() is registered on s_combo.mode = handles[1]; with group devices the press/release events are delivered on the single handle control.cpp binds (handles[0], device 'adc_button_group'), so s_combo.mode_down never returns to false. Pressing SET once 10 s later silently wipes Wi-Fi, broker and the room table and reboots the panel — a factory reset the user never asked for.",
+          "evidence": "app_logic.cpp:229-247 on_mode_press/on_mode_release; app_logic.cpp:315-316 `s_combo.mode = btns->num_buttons > 1 ? btns->button_handles[1] : NULL;` and :341-350 where only handles[0] gets BUTTON_SINGLE_CLICK; control.cpp:78-115 binds single/double/long-press on `set_btn_btns->button_handles[0]` only.",
+          "suggestedChange": "Take MODE's press/release from the same handle the events actually arrive on (handles[0] plus its button name/index), or require both handles to be the device's event source before trusting the latch; at minimum, reset s_combo.mode_down when the group reports a release it cannot attribute."
+        },
+        {
+          "severity": "critical",
+          "area": "correctness",
+          "file": "firmware/components/app_logic/heating_ui.cpp",
+          "line": 457,
+          "description": "The touch gesture can never fire. sample_touch() (a 50 ms lv_timer on the LVGL task) reads lv_indev_get_state() of the framework's pointer device, but LVGL drains that device in its own read phase (lv_indev_read() flips it back to RELEASED) before timer handlers run in the same lv_timer_handler pass. On the tick that should detect the release, the indev is already RELEASED with was_pressed still false — so was_pressed was never observed PRESSED and touch_hit() is never called.",
+          "failureScenario": "User taps a card: the framework's indev reports PRESSED only inside lv_indev_read() during the read phase, which republishes LV_INDEV_STATE_RELEASED (esp_lvgl_port's read cb ends its callback with `data->state = LV_INDEV_STATE_RELEASED`). touch_sample_timer_cb then runs in the same handler pass, sees RELEASED, and because was_pressed is false does nothing. No tap ever selects a card or changes a setpoint; the whole touch half of the panel (spec f3/f19) is inert, and the log still prints no warning because s_touch_indev was found.",
+          "evidence": "heating_ui.cpp:447-468 sample_touch() (lv_indev_get_state/lv_indev_get_point, `else if (was_pressed) touch_hit(...)`); heating_ui.cpp:508 lv_timer_create(touch_sample_timer_cb, 50, NULL); firmware/managed_components/espresso… esp_lvgl_port indev read cb sets `data->state = LV_INDEV_STATE_RELEASED` at the end of each read; LVGL lv_indev_read() sets indev->state to RELEASED when no press is reported, and lv_timer_handler runs lv_indev_read() before timer handlers.",
+          "suggestedChange": "Do not infer the tap from lv_indev_get_state(): drive the gesture from an LVGL event on the cards (LV_EVENT_PRESSED/LV_EVENT_RELEASED/LV_EVENT_CLICKED is unavailable on labels) or register the product's hit-test as the indev's read callback's owner — e.g. add a press/release edge counter in app_display that the product can poll, or create the product's own indev only when app_display does not create one."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/main/app_main.cpp",
+          "line": 89,
+          "description": "heating_ui_init() now runs on the app_main task and calls app_display_init(), which starts display_setup_task and returns immediately; heating_ui_init then sleeps 1500 ms and tries lvgl_port_lock(5000). The display setup task preempts app_main (priority 4 vs 1) only at its first blocking call, so this depends on lvgl_port_init()/lvgl_port_add_disp() blocking; if the display bring-up stalls (as the block's own comment says it can), app_main waits on the mutex and then returns ESP_ERR_TIMEOUT, and a boot with no dashboard never reaches the console or the MQTT block.",
+          "failureScenario": "On a board/emulator where lvgl_port_init never returns (the block's comment says it is exactly what must not take boot down), heating_ui_init's 1500 ms wait expires, lvgl_port_lock returns false, and app_main logs 'LVGL is not running — no dashboard' — the dashboard-owning task is gone and there is no retry, while the rest of boot still runs. The previous design kept all of this in a throwaway task.",
+          "evidence": "app_main.cpp:87-92 (`ESP_ERROR_CHECK(app_display_init()); esp_err_t ui_err = heating_ui_init();`); heating_ui.cpp:472-527 the 1500 ms delay + lvgl_port_lock(5000) + return ESP_ERR_TIMEOUT; app_display.cpp:66-80/158-161 the create-then-teardown structure of display_setup_task.",
+          "suggestedChange": "Keep the dashboard bring-up on its own task (as before) but have it wait for the display to report LVGL up (an event/flag set by app_display) instead of a fixed 1500 ms sleep, so a failed panel degrades without a blocking wait on app_main."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 259,
+          "description": "The 5-minute SoftAP idle timeout closes the onboarding AP with esp_wifi_set_mode(WIFI_MODE_STA) even though the station has no credentials yet — the panel ends up with no reachable interface at all, and the message promises 'the SET button brings it back' while re-arming is bound to the BOOT button.",
+          "failureScenario": "A user follows the printed boot-log instructions but needs longer than 5 minutes (no credentials yet, so the station never associates). ap_stop_cb() sets WIFI_MODE_STA, the AP disappears, the settings page becomes unreachable, and the documented recovery is a BOOT long press (app_logic.cpp:336-348), not SET.",
+          "evidence": "app_mqtt.cpp:242-264 ap_stop_cb() (`esp_wifi_set_mode(WIFI_MODE_STA)`, log 'the SET button brings it back'); app_logic.cpp:336-348 boot_btn_on_long_press() -> app_mqtt_ap_start().",
+          "suggestedChange": "Make the timeout message name the button that actually reopens the AP (or register the same action on SET's long press) and state the recovery on the settings page as well."
+        },
+        {
+          "severity": "warning",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_audio/app_audio.cpp",
+          "line": 135,
+          "description": "The button-opened listening window is not the AFE/MultiNet window: a SET/BOOT press only sets the product's amber strip, banner and 10 s bar, while MultiNet only runs after WAKENET_DETECTED. A command spoken after the button press is still discarded unless the wake word opened the window.",
+          "failureScenario": "User presses SET and says 'set the office to 21': audio_detect_task's local `listening` is false, so it `continue`s before s_mn->detect() runs, the phrase is never recognised, and after 10 s the panel shows 'Sorry, not understood'. Only saying 'Hi ESP' first makes the spoken command work — so a voice window opened by the button never reaches heating_voice_apply_command().",
+          "evidence": "app_audio.cpp:126-180 audio_detect_task (listening only becomes true on WAKENET_DETECTED, :137-145); app_logic.cpp:270-285 push_to_talk() only calls heating_ui_listening()/heating_ui_banner() — no call into app_audio or the AFE.",
+          "suggestedChange": "Expose an 'open the command window now' entry point in the audio block (e.g. app_audio_listen_once(): s_mn->clean() plus a flag the detect task honours) and call it from push_to_talk(), so both triggers satisfy spec f1."
+        }
+      ],
+      "deviceBehavior": {
+        "gpios": [
+          {
+            "pin": "37",
+            "function": "WS2812 status strip (board led_strip via HUE/SATURATION/BRIGHTNESS/POWER)"
+          },
+          {
+            "pin": "61",
+            "function": "BOOT button — push-to-talk single click, 2 s long press = permit join / reopen onboarding AP"
+          },
+          {
+            "pin": "ADC oneshot channel",
+            "function": "adc_button_group SET(scan 0) / MODE(1) / VOLUME_DOWN(2) / VOLUME_UP(3); SET single click = push-to-talk, SET+MODE hold = factory reset"
+          },
+          {
+            "pin": "0/1",
+            "function": "I2C for GT1151 touch (board-owned)"
+          },
+          {
+            "pin": "40/43/44/45",
+            "function": "on-board RGB LCD (display framework)"
+          },
+          {
+            "pin": "3/4/5/6/7",
+            "function": "ES8389 codec + I2S voice mic (board/periph owned)"
+          }
+        ],
+        "peripherals": [
+          {
+            "part": "esp32_s31_korvo_1 RGB LCD + LVGL",
+            "driver": "app_display (display framework), lvgl_port_add_disp"
+          },
+          {
+            "part": "GT1151 touch",
+            "driver": "app_display lvgl_port_add_touch (single reader); product samples the framework indev"
+          },
+          {
+            "part": "ES8389 codec",
+            "driver": "app_driver tone generator"
+          },
+          {
+            "part": "esp-sr AFE + MultiNet",
+            "driver": "app_audio, vocabulary from app_logic heating_voice_register()"
+          },
+          {
+            "part": "WS2812 strip",
+            "driver": "app_driver status_board_strip"
+          },
+          {
+            "part": "Wi-Fi STA + onboarding SoftAP",
+            "driver": "app_mqtt"
+          },
+          {
+            "part": "MQTT",
+            "driver": "app_mqtt esp-mqtt, data handler from heating_mqtt.cpp"
+          }
+        ],
+        "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} (qos1, retained false) to zigbee2mqtt/<TRV>; publish {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe each TRV topic and each air-sensor topic on every broker connect; status zerocode/<mac12>/status retained 'online' with last-will 'offline'. HTTP: /settings (GET/POST form), /api/state, /api/set.",
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install (data handler installed before the session)",
+          "app_audio_init (mic, models, AFE, MultiNet: clear -> heating_voice_register -> update)",
+          "app_display_init + heating_ui_init on app_main (1500 ms wait, LVGL lock, build_screen, ui 250 ms / listen 1000 ms / touch-sample 50 ms timers)",
+          "heating_web_install",
+          "app_webui_init (mdns + httpd)",
+          "app_mqtt_init (STA + event handlers; SoftAP when no SSID stored)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init (SNTP after the default loop exists)",
+          "app_logic_init (re-init model, 3 esp_timers, SET/MODE bindings, 'heating' console cmd)",
+          "app_console_init (REPL)"
+        ],
+        "expectedLogPatterns": [
+          "heating_voice: \"N of N phrases registered\" (now printed)",
+          "app_audio: \"wake word detected — listening for a command\", \"command phrase <id>\"",
+          "app_mqtt: \"SoftAP 'Korvo-Heating-XXXX' (password 'heatpanel') — open http://korvo-heating.local/settings\"",
+          "app_mqtt: \"Wi-Fi got IP\", \"MQTT connecting to <uri>\", \"MQTT connected\"",
+          "heating: \"room table loaded (...)\", \"subscribed to 4 room topics\", \"<room> -> <x.y>  <topic>\"",
+          "heating_ui: \"dashboard up (4 rooms)\" (and \"no touch input device\" when touch did not come up)",
+          "heating_panel: \"front buttons bound (4) — SET = push-to-talk, SET+MODE 10000 ms = factory reset\", \"heating panel logic up\"",
+          "app_main: \"ZeroCode AI firmware started\"",
+          "app_mqtt: \"Wi-Fi disconnected — retrying in 30 s\" then \"Wi-Fi reconnect attempt\""
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "notes": [
+          "SoftAP onboarding exists but its first start leaves the STA interface unconfigured while s_wifi_started is already true.",
+          "Touch gestures never register: the product samples the framework's indev state after LVGL has already drained it.",
+          "The factory-reset combo relies on handles[0]/[1] but only handles[0] is the device event source, so mode_down can latch.",
+          "Voice recognition still requires the wake word; a SET/BOOT press only opens the product's visual window."
+        ]
+      }
+    }
+  }
+}
