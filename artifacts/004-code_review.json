@@ -1,0 +1,258 @@
+{
+  "agent": "code_review",
+  "seq": 4,
+  "savedAt": "2026-11-07T15:07:14.686Z",
+  "report": {
+    "result": "fail",
+    "summary": "Dashboard and setpoint-publish path are correct, but voice control is completely dead (vocabulary never registered, listening handler empty, voice functions not exported), there is no SoftAP onboarding while Wi-Fi is unconfigured, and the LED strip re-asserts a refused command while offline.",
+    "report": {
+      "filesReviewed": [
+        "artifacts/spec.json",
+        "artifacts/002-code_writing.json",
+        "artifacts/003-firmware_compilation.json",
+        "artifacts/template.yaml",
+        "artifacts/board.yaml",
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_logic/heating.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/heating_voice.cpp",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_logic/CMakeLists.txt",
+        "firmware/components/app_logic/control.cpp",
+        "firmware/components/app_logic/button_registry.cpp",
+        "firmware/components/app_logic/zc_behaviors.cpp",
+        "firmware/components/app_logic/diagnostics.cpp",
+        "firmware/components/app_logic/include/app_logic.h",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_mqtt/include/app_mqtt.h",
+        "firmware/components/app_mqtt/CMakeLists.txt",
+        "firmware/components/app_webui/app_webui.cpp",
+        "firmware/components/app_webui/include/app_webui.h",
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/components/app_audio/include/app_audio.h",
+        "firmware/components/app_display/app_display.cpp",
+        "firmware/components/app_driver/app_driver.cpp",
+        "firmware/components/app_driver/include/app_driver.h",
+        "firmware/components/gen_bmgr_codes/gen_board_device_config.c",
+        "firmware/components/gen_bmgr_codes/gen_board_device_handles.c",
+        "firmware/main/app_main.cpp",
+        "firmware/partitions.csv",
+        "firmware/sdkconfig.defaults"
+      ],
+      "findings": [
+        {
+          "severity": "critical",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_audio/app_audio.cpp",
+          "line": 137,
+          "description": "The voice vocabulary is never registered with MultiNet: app_audio_init() clears the command list and calls esp_mn_commands_update() with nothing added, and heating_voice_register() has no caller anywhere in the tree (the generator left app_audio's audio_commands_register / audio_command_cases slots empty). Nothing exports the product's heating_voice_* functions either, so app_audio cannot call them.",
+          "failureScenario": "Boot with a working model partition. ESP_LOGI \"%d of %d phrases registered\" is never printed, s_registered stays false, and MultiNet's language model contains zero commands. The user presses BOOT and says \"set the office to 21\" — the phrase is unknown, so heating_voice_apply_command() is never reached, the listening window closes on AFE timeout with no banner, and no setpoint is ever published by voice (spec f9 and the input half of f1).",
+          "evidence": "app_audio.cpp:137-142: esp_mn_commands_clear(); esp_mn_commands_update(); then s_mn->print_active_speech_commands(...). search_files for heating_voice_register|heating_voice_apply_command|heating_voice_on_event over firmware/** returns only their definitions (heating_voice.cpp:95, :144; app_logic.cpp:171) and the declarations in heating.h — no call site. app_logic.cpp:304-322 (app_logic_init) calls only heating_init, bind_adc_buttons, heating_console_register, heating_broker_ready.",
+          "suggestedChange": "Register the vocabulary through the audio block's command slot so it runs between esp_mn_commands_clear() and esp_mn_commands_update(), and route the recognised phrase id and the listening transitions (wake word -> heating_ui_listening(true), timeout -> heating_voice_not_understood()) into the product's handlers."
+        },
+        {
+          "severity": "critical",
+          "area": "wiring",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 69,
+          "description": "Nothing ever installs the product's MQTT data handler, so no zigbee2mqtt state message reaches the model: app_mqtt_set_data_handler() is never called and app_mqtt.cpp does not even reference heating_on_mqtt_message.",
+          "failureScenario": "The broker is up and each TRV publishes to zigbee2mqtt/0xa4c1383b5b3d7063. heating_broker_ready(true) subscribes (heating.cpp:335-338), the broker delivers, mqtt_event_handler -> mqtt_handle_data finds s_data_handler == NULL and drops the payload. Every card keeps showing \"--.-\" / \"no reading\" forever and the 'heat'/'off' tag never appears, so spec f2/f7/f15/f18 cannot be observed even though publishing works.",
+          "evidence": "app_mqtt.cpp:48-52 and :113-117 define/set s_data_handler; app_qtt.cpp:100-108 mqtt_handle_data drops the message when it is NULL. search_files for app_mqtt_set_data_handler shows only the definition (app_mqtt.cpp:113) and the prototype (app_mqtt.h:82) — no call in app_main.cpp, app_logic.cpp or heating.cpp.",
+          "suggestedChange": "Install heating_on_mqtt_message as the data handler before app_mqtt_init() (app_main or app_logic_init ordering must allow it — e.g. call app_mqtt_set_data_handler() from heating_init() before app_mqtt_init() runs, or from app_main just before app_mqtt_init())."
+        },
+        {
+          "severity": "critical",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_webui/app_webui.cpp",
+          "line": 273,
+          "description": "There is no SoftAP anywhere in the firmware. app_webui_init() only init/mdns/httpd; app_mqtt forces WIFI_MODE_STA (app_mqtt.cpp:196). With no credentials stored, mqtt_wifi_start() returns early (ssid empty) and no radio interface exists, so the settings page is unreachable.",
+          "failureScenario": "A freshly flashed board (or one right after the factory reset) boots with empty NVS: app_mqtt_configured() is false, no station is started, no AP is created, and the device's 192.168 host never exists. The commissioning step in the spec (join the panel's AP, open the settings page, enter Wi-Fi + broker) is impossible — the only way in is the serial console command mqtt-setup.",
+          "evidence": "search_files for softap|SOFTAP|WIFI_MODE_AP over firmware/components/** returns no matches; app_webui.cpp:245-273 has no Wi-Fi code at all; app_mqtt.cpp:190-201 mqtt_wifi_start() and :196 esp_wifi_set_mode(WIFI_MODE_STA).",
+          "suggestedChange": "Have the webui/mqtt block bring up a SoftAP (e.g. WIFI_MODE_APSTA with a generated SSID/password shown on the LCD) whenever app_mqtt_configured() is false, and drop back to STA-only once credentials are saved."
+        },
+        {
+          "severity": "warning",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 108,
+          "description": "The spec maps push-to-talk to the front SET button, but the product binds it to the BOOT button (GPIO61); SET/MODE are used only for the factory-reset combination and VOL± do nothing.",
+          "failureScenario": "A user following the spec presses SET expecting the mic to open: on_set_press() only evaluates the reset combo, so nothing listens until they happen to press BOOT. The most accessible front button does not do the documented job.",
+          "evidence": "app_logic.cpp:170-183 boot_btn_on_single_click() (the BOOT push-to-talk); app_logic.cpp:222-236 on_set_press/on_set_release only call combo_eval(); spec.json inputs[0] label \"Front button (SET)\".",
+          "suggestedChange": "Bind push-to-talk to the SET handle as well (and keep the long-press combination separate), or document the BOOT-button mapping in the product description."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 148,
+          "description": "The strip's idle state turns the WS2812 red for one second every time a command is refused, including the offline case, so it re-asserts POWER=true on every tap while offline. That is precisely the spec's 'flashing red = offline' rendering and overrides 'off (dim) when idle'.",
+          "failureScenario": "Broker unreachable, user taps + five times: each tap calls heating_ui_rejected() -> strip red + esp_timer -> after 1 s strip_idle() -> heating_online() false but app_mqtt_configured() true -> set_strip(0,0,BRI_DIM) with POWER=true, i.e. solid dim white, not red and not off. Any touch on the panel (heating_ui_touch_activity only refreshes the LCD) does not re-evaluate the strip either.",
+          "evidence": "app_logic.cpp:143-160 heating_ui_rejected(); app_logic.cpp:96-104 strip_idle() with the `heating_online()/app_mqtt_configured()` ladder.",
+          "suggestedChange": "Give the offline/idle state its own (dim red or off) colour and set POWER accordingly, and re-evaluate strip_idle() when the broker session drops rather than only on a rejection."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/components/app_logic/heating_ui.cpp",
+          "line": 57,
+          "description": "heating_ui.cpp installs a second LVGL input device on the GT1151 that app_display.cpp already registered through lvgl_port_add_touch(), and polls it from its own task through esp_lcd_touch_read_data().",
+          "failureScenario": "app_display.cpp:131-145 calls lvgl_port_add_touch(&board_touch_cfg) for the same touch handle; heating_ui.cpp:success installs another lv_indev plus a 20 ms polling task that reads the I2C touch controller concurrently with the lvgl_port input device. A single tap is then delivered twice: the framework's indev selects a card on press, the product's release-triggered touch_hit() sees s_sel already equal to that card and immediately applies −/+ depending on where the finger landed, changing a setpoint on what the user intended as a selection tap.",
+          "evidence": "heating_ui.cpp:44-56 static touch state, :512-530 install_touch() creating the indev and task, :142-168 touch_hit() selecting on `i != s_sel`; app_display.cpp:137-144 lvgl_port_add_touch() on the same h->touch_handle.",
+          "suggestedChange": "Use the framework's input device instead of a second one: drop the private indev and read tap/coordinate events from a single input path (e.g. register the product's hit-test as an lv_indev event cb, or have app_display expose the indev)."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 248,
+          "description": "app_mqtt_set_wifi()/app_mqtt_set_broker() destroy and restart the MQTT client (and trigger an SNTP start) from inside the HTTP settings-page handler, i.e. the httpd task — after which the session comes up and heating_broker_ready(true) re-subscribes rooms whose heating_web.cpp edits were written after the connect may already have happened.",
+          "failureScenario": "On a first commissioning both `broker` and `ssid` are posted: apply_form() writes room topics (heating_web.cpp:253-277), then app_mqtt_set_broker restarts the client, which can complete a CONNECT while the handler is still running, so heating_broker_ready(true) subscribes only rooms whose topic was already written and skips the open ones; the whole flow additionally runs on the httpd task whose lifetime is not documented for a client destroy/restart.",
+          "evidence": "app_mqtt.cpp:245-249 esp_mqtt_client_stop/destroy/s_client=NULL then mqtt_start_client(); app_mqtt.cpp:57-59 heating_broker_ready(true) on CONNECT; heating_web.cpp:280-290 apply_form() order.",
+          "suggestedChange": "Apply the whole posted form atomically on an application task (queue it from the handler), with the room table saved before the transport is (re)started, or have heating_broker_ready(true) read the topic table after a short settle rather than from a cached flash copy."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/components/app_logic/heating_ui.cpp",
+          "line": 397,
+          "description": "The 2-minute screen dim compares a 32-bit millisecond uptime subtraction against DIM_AFTER_MS, which is a plain int; this works today but the same expression runs only when `dirties` is true, so the dim state can lag by however long the dashboard is idle re-render-suppressed.",
+          "failureScenario": "Dashboard reaches steady state: room 0's target is 21.0, all readings are fresh, so `online_now == s_online_ui`, `s_refresh` false and nothing else dirties until the 1 s clock tick. paint_dimming() runs only inside paint_all() on a dirty cycle, so a dim decision made on the 1 s cadence is applied up to 1 s late (harmless) — but any path that suppresses the clock tick (e.g. `next_clock` updated by a refresh in the same ms) leaves the display bright past 2 minutes, and `s_last_activity` is never refreshed by MQTT traffic, contrary to spec powerManagement.wakeSources (\"MQTT message\").",
+          "evidence": "heating_ui.cpp:394-404 paint_dimming(); :432-452 ui_timer_cb() dirties only on s_refresh / s_banner_dirty / online change / 1 s clock; heating.cpp:294-300 heating_on_mqtt_message() calls heating_ui_invalidate() but nothing calls heating_ui_touch_activity() on inbound traffic.",
+          "suggestedChange": "Treat an MQTT state message as activity (call heating_ui_touch_activity() from heating_on_mqtt_message()) and evaluate the dim/bright decision on every tick."
+        },
+        {
+          "severity": "info",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_logic/heating_voice.cpp",
+          "line": 75,
+          "description": "The voice vocabulary ignores the phrase text: the per-room variants are hard-coded to 21 / 21.5 / 22 °C for every room and the relative commands are \"plus one\"/\"minus one\".",
+          "failureScenario": "Saying \"set the office to 19\" (the spec's own example) is not in the model, so MultiNet cannot match it; only the invented phrasings and the fixed 21/21.5/22 pair are recognised.",
+          "evidence": "heating_voice.cpp:70-79 phrase_text() with k_variants = {\"set the %s to 21\", \"set the %s to 21.5\", \"%s 21 and a half\", \"%s 22\"}.",
+          "suggestedChange": "Generate the variants per room from the current target and a small set of spoken numbers, or at least match the spec's example phrasings."
+        },
+        {
+          "severity": "info",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_logic/heating_voice.cpp",
+          "line": 160,
+          "description": "The 'nothing recognised' path shows no banner — the spec asks for a 3 s 'Sorry, not understood' and an LED back to green.",
+          "failureScenario": "A user whispers something unrecognised: the listening bar disappears after the timeout but the screen shows nothing explaining why nothing happened.",
+          "evidence": "app_logic.cpp:161-169 listen_timeout_cb() calls heating_voice_not_understood() which only clears the listening flag; heating_voice.cpp:159-163 heating_voice_not_understood() itself only calls heating_ui_listening(false).",
+          "suggestedChange": "Show a 'Not understood' banner from the timeout path and clear the amber strip state."
+        },
+        {
+          "severity": "info",
+          "area": "resilience",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 169,
+          "description": "The Wi-Fi reconnect back-off is a vTaskDelay inside the system event task handler.",
+          "failureScenario": "Wi-Fi down: each WIFI_EVENT_STA_DISCONNECTED blocks the default event loop for 30 s, delaying every other default-loop event (IP events, other components' handlers, the httpd/mdns default-loop users) on that loop.",
+          "evidence": "app_mqtt.cpp:163-178 wifi_event_handler(): `vTaskDelay(pdMS_TO_TICKS(30000)); esp_wifi_connect();` inside the ESP_EVENT handler.",
+          "suggestedChange": "Schedule the retry with an esp_timer (or a worker task notification) instead of sleeping on the event task."
+        },
+        {
+          "severity": "info",
+          "area": "api_correctness",
+          "file": "firmware/main/app_main.cpp",
+          "line": 90,
+          "description": "heating_web_install() is called just before app_webui_init(), which is required, but heating_web.cpp's POST reads the body through app_webui_read_request() without checking Content-Length, so an oversized or chunked body is silently truncated at 1800 bytes and a cut field is written as the stored value.",
+          "failureScenario": "A user pastes a very long sensor topic: the body is cut mid-field, form_set() url-decodes a partial value into the live config and heating_save_cfg() persists it; the broker connection then subscribes to a wrong/incomplete topic.",
+          "evidence": "heating_web.cpp:294-305 settings_entry() loop over app_webui_read_request() with sizeof(body)-1; app_webui.cpp:240-244 app_webui_read_request() is a single httpd_req_recv() with no length validation.",
+          "suggestedChange": "Reject (or ignore the request) when the body does not fit, and validate each field length against the destination buffer before copying."
+        }
+      ],
+      "deviceBehavior": {
+        "gpios": [
+          {
+            "pin": "37",
+            "function": "WS2812 status strip (board led_strip; colour via HUE/SATURATION/BRIGHTNESS/POWER)"
+          },
+          {
+            "pin": "61",
+            "function": "BOOT button — push-to-talk single click, 2 s long press = permit join"
+          },
+          {
+            "pin": "ADC oneshot channel",
+            "function": "adc_button_group SET / MODE / VOLUME_DOWN / VOLUME_UP (SET+MODE = factory reset combo)"
+          },
+          {
+            "pin": "0/1",
+            "function": "I2C bus for GT1151 touch (board-owned)"
+          },
+          {
+            "pin": "40/43/44/45",
+            "function": "on-board RGB LCD (display framework)"
+          },
+          {
+            "pin": "3/4/5/6/7",
+            "function": "ES8389 codec + I2S voice mic (board/periph owned)"
+          }
+        ],
+        "peripherals": [
+          {
+            "part": "esp32_s31_korvo_1 RGB LCD + LVGL",
+            "driver": "app_display (display framework)"
+          },
+          {
+            "part": "GT1151 touch",
+            "driver": "app_display lvgl_port_add_touch + a private indev in heating_ui.cpp"
+          },
+          {
+            "part": "ES8389 codec",
+            "driver": "app_driver (tone generator; the mic uses I2S port 1)"
+          },
+          {
+            "part": "esp-sr AFE (wn9_hiesp + mn7_en)",
+            "driver": "app_audio"
+          },
+          {
+            "part": "WS2812 strip",
+            "driver": "app_driver status_board_strip"
+          },
+          {
+            "part": "MQTT over Wi-Fi STA",
+            "driver": "app_mqtt (esp-mqtt)"
+          }
+        ],
+        "dataModel": "Framework: mqtt/webui/display/audio, no Matter/RainMaker data model. Topics: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV> (qos 1, retain 0); publish {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe zigbee2mqtt/<TRV> and the per-room air-sensor topic; status topic zerocode/<mac12>/status with last-will \"offline\".",
+        "bootSequence": [
+          "nvs_flash_init (+erase on version mismatch)",
+          "esp_board_manager_init (board devices incl. adc_button_group, boot_button, led_strip, display_lcd, lcd_touch, audio_dac)",
+          "app_driver_init (codec open + status strip, born off)",
+          "heating_init (room table + last published targets from NVS 'heating')",
+          "heating_task -> heating_ui_init: app_display_init (display setup task -> lvgl_port_init + add_disp + add_touch), 1500 ms wait, LVGL lock, build_screen, ui_timer 250 ms, listen_timer 1000 ms, private touch task",
+          "app_audio_init (I2S mic, models, AFE, MultiNet — clears the command list and updates an EMPTY model)",
+          "heating_web_install (registers /settings handler)",
+          "app_webui_init (netif/loop, mdns, httpd on :80)",
+          "app_mqtt_init (netif STA, event handlers, console cmds, load config, start Wi-Fi if configured)",
+          "zc_behaviors_init (sntp/console/watchdog/boot count)",
+          "app_logic_init (heating_init again, 3 esp_timers, bind SET/MODE, console 'heating', heating_broker_ready(false))",
+          "app_console_init (REPL on UART)"
+        ],
+        "expectedLogPatterns": [
+          "TAG app_main: \"dashboard start: %s\" and \"ZeroCode AI firmware started\"",
+          "heating: \"room table loaded (...)\" / \"no saved room table — using the defaults\"",
+          "heating_ui: \"dashboard up (4 rooms)\", \"touch input installed\"",
+          "app_display: \"Panel 'display_lcd' ...\" and \"Touch 'lcd_touch' ...\"",
+          "heating_panel: \"front buttons bound (4) — SET+MODE 10000 ms = factory reset\", \"heating panel logic up\"",
+          "heating_voice: \"%d of %d phrases registered\" — NEVER printed (voice unregistered)",
+          "app_mqtt: \"MQTT initialized (node %s)\", \"MQTT connecting to %s\", \"MQTT connected\", \"Wi-Fi got IP\"",
+          "heating: \"subscribed to 4 room topics\" on every broker session"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC> (no args: lists the four rooms, their targets and topics)",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup (guided Wi-Fi + broker)"
+        ],
+        "notes": [
+          "No SoftAP is created anywhere: first-time commissioning only works over the serial console.",
+          "Nothing installs heating_on_mqtt_message as the MQTT data handler, so no room state is ever parsed.",
+          "Voice is inert: the MultiNet command list is empty and heating_voice_* is never called from app_audio.",
+          "Setpoint publishing, clamping to 5.0–30.0 in 0.5 steps, the 30 s duplicate window, the settings page and the factory-reset combo path are implemented and wired as described (factory reset and the web form were read, not exercised)."
+        ]
+      }
+    }
+  }
+}
