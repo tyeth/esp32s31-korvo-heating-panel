@@ -15,6 +15,7 @@
 
 #include <stdbool.h>
 #include <esp_err.h>
+#include <mqtt_client.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,8 +49,42 @@ esp_err_t app_mqtt_set_broker(const char *uri, const char *username, const char 
  *  the broker). */
 bool app_mqtt_configured(void);
 
+/* The stored broker settings, read-only — for a settings page that shows them
+ * without keeping a second copy. Never returns NULL; empty before setup. */
+const char *app_mqtt_broker_uri(void);
+const char *app_mqtt_user(void);
+const char *app_mqtt_user_password(void);
+
 /** Whether this block owns Wi-Fi (false when Matter/RainMaker is co-selected). */
 bool app_mqtt_owns_wifi(void);
+
+/* ── Raw session, for a product that speaks its own protocol ─────────────
+ *
+ * The session above is driven entirely by this block (Wi-Fi, broker, the
+ * client's task). These give the product the handle to publish and subscribe
+ * on it, without opening a second connection or a second client task.
+ */
+
+/** The client handle, or NULL before the broker config makes one. */
+esp_mqtt_client_handle_t app_mqtt_client(void);
+
+/** Subscribe to @p topic on the live session (nothing happens while offline;
+ *  call it again when connected). The product's own data handler receives
+ *  every message that arrives. */
+int app_mqtt_subscribe(const char *topic);
+
+/** Publish @p data on @p topic. -1 when there is no session. */
+int app_mqtt_publish(const char *topic, const char *data, int len, int qos, int retain);
+
+/** Install the handler that receives EVERY MQTT_EVENT_DATA — (topic,
+ *  topic_len, data, data_len) — whatever topic the client forwards. Call it
+ *  before app_mqtt_init(). */
+void app_mqtt_set_data_handler(void (*handler)(const char *topic, int topic_len,
+                                               const char *data, int data_len));
+
+/** Tell the block that the application's own session is up (true) or gone
+ *  (false), so it can hold the session or re-attempt the connection. */
+void app_mqtt_set_online(bool online);
 
 #ifdef __cplusplus
 }

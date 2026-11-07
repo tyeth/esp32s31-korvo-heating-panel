@@ -66,3 +66,11 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+
+# The board definition (gen_bmgr_codes/board_manager.defaults) enables the DVP
+# camera video device; esp_video also enables the USB-UVC video device on this
+# target, and neither is used by this product. Turning both off keeps them out
+# of the image so the 2.25 MB OTA slot fits (the scaffold overflowed it by
+# ~360 KB before this).
+CONFIG_ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE=n
+CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n

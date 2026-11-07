@@ -3,6 +3,8 @@
 #include "app_config.h"
 #include "app_console.h"
 
+#include "heating.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <esp_log.h>
@@ -11,6 +13,8 @@
 #include <esp_netif.h>
 #include <esp_wifi.h>
 #include <esp_mac.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <nvs.h>
 #include <mqtt_client.h>
 
@@ -33,6 +37,13 @@ static char s_uri[129] = {0};
 static char s_user[33] = {0};
 static char s_mqtt_pass[65] = {0};
 
+/* The product's own data handler (app_mqtt_set_data_handler). */
+static void (*s_data_handler)(const char *topic, int topic_len,
+                              const char *data, int data_len) = NULL;
+/* The product says its session is up: re-subscribe its topics here so they
+ * are in place on every (re)connect, before any state message is missed. */
+static bool s_held_online = false;
+
 
 
 /* Connection-state transitions. Behavior blocks hook these via
@@ -40,7 +51,12 @@ static char s_mqtt_pass[65] = {0};
 static void mqtt_on_event(int connected)
 {
     (void)connected;
-
+    /* Every (re)connect re-creates the subscriptions: a broker restarted in
+     * clear session loses them, and in a persistent session they survive —
+     * subscribing twice is harmless, missing them is not. */
+    if (connected && s_held_online) {
+        heating_broker_ready(true);
+    }
 }
 
 /* Hardware/param bus -> state topics. Publishes only while connected;
@@ -70,7 +86,42 @@ static void mqtt_driver_cb(
 static void mqtt_handle_data(const char *topic, int tlen, const char *data, int dlen)
 {
     (void)topic; (void)tlen; (void)data; (void)dlen;
+    if (s_data_handler != NULL) {
+        s_data_handler(topic, tlen, data, dlen);
+    }
+}
 
+/* ── Raw session accessors (app_mqtt.h) ─────────────────────────────── */
+
+esp_mqtt_client_handle_t app_mqtt_client(void)
+{
+    return s_client;
+}
+
+int app_mqtt_subscribe(const char *topic)
+{
+    if (s_client == NULL || !s_connected || topic == NULL || topic[0] == 0) return -1;
+    return esp_mqtt_client_subscribe(s_client, topic, 0);
+}
+
+int app_mqtt_publish(const char *topic, const char *data, int len, int qos, int retain)
+{
+    if (s_client == NULL || topic == NULL) return -1;
+    return esp_mqtt_client_publish(s_client, topic, data, len, qos, retain);
+}
+
+void app_mqtt_set_data_handler(void (*handler)(const char *topic, int topic_len,
+                                               const char *data, int data_len))
+{
+    s_data_handler = handler;
+}
+
+void app_mqtt_set_online(bool online)
+{
+    s_held_online = online;
+    if (online) {
+        mqtt_on_event(1);
+    }
 }
 
 static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
@@ -126,6 +177,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t event_i
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(TAG, "Wi-Fi disconnected — retrying");
+        /* 30 s between attempts: a router that is down does not need to be
+         * hammered, and the panel keeps showing its last known values. */
+        vTaskDelay(pdMS_TO_TICKS(30000));
         esp_wifi_connect();
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ESP_LOGI(TAG, "Wi-Fi got IP");
@@ -228,6 +282,10 @@ bool app_mqtt_configured(void)
 {
     return s_ssid[0] != 0 && s_uri[0] != 0;
 }
+
+const char *app_mqtt_broker_uri(void)      { return s_uri; }
+const char *app_mqtt_user(void)            { return s_user; }
+const char *app_mqtt_user_password(void)   { return s_mqtt_pass; }
 
 bool app_mqtt_owns_wifi(void)
 {

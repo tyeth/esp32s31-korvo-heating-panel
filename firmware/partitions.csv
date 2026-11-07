@@ -1,8 +1,9 @@
-# 8MB flash layout WITH an esp-sr model partition — for products using the
-# audio framework. `model` must hold the real srmodels.bin: wn9 wake word +
-# mn7_en quant is 3.05 MB (measured from a voice-lamp build, not estimated),
-# so the slot is 3.35 MB. OTA slots are 2.25 MB each (the voice reference app
-# is 1.38 MB).
+# 16MB flash layout WITH an esp-sr model partition — for products using the
+# audio framework on a 16 MB part (the ESP32-S31-Korvo-1). `model` holds the
+# real srmodels.bin: wn9 wake word + mn7_en quant is 3.05 MB, so the slot is
+# 3.35 MB. The display (LVGL), voice and MQTT frameworks together build an app
+# of ~2.9 MB, so the OTA slots are 3.5 MB each — the 8 MB table's 2.25 MB
+# slots overflow by ~450 KB with all four of this product's frameworks in.
 #
 # `fctry` is the last 24KB of the part, past everything the build flashes
 # (the image ends where srmodels.bin ends, inside `model`), so merged_flash.bin
@@ -15,7 +16,7 @@ nvs,             data, nvs,      0x10000,   0xC000,
 nvs_keys,        data, nvs_keys, ,          0x1000,   encrypted
 otadata,         data, ota,      ,          0x2000,
 phy_init,        data, phy,      ,          0x1000,
-ota_0,           app,  ota_0,    0x20000,   0x240000,
-ota_1,           app,  ota_1,    0x260000,  0x240000,
-model,           data, spiffs,   0x4A0000,  0x35A000,
-fctry,           data, nvs,      0x7FA000,  0x6000,
+ota_0,           app,  ota_0,    0x20000,   0x380000,
+ota_1,           app,  ota_1,    0x3A0000,  0x380000,
+model,           data, spiffs,   0x720000,  0x35A000,
+fctry,           data, nvs,      0xA7A000,  0x6000,

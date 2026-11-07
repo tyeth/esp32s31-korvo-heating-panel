@@ -9,8 +9,7 @@
  *
  * Protocol solutions are blocks: the generator copies only the selected
  * frameworks' components into the build and fills the main_includes /
- * main_init slots below from each protocol block's contributions. A
- * Matter-only product never references RainMaker / Zigbee / BLE Mesh.
+ * main_init slots below from each protocol block's contributions.
  *
  * ──── INITIALIZATION ORDER ────────────────────────────────────────────
  * 1. NVS Flash       → Persistent storage (required by all frameworks)
@@ -33,13 +32,24 @@
 #include "app_webui.h"
 
 #include "app_mqtt.h"
+#include "heating.h"
 #include "app_logic.h"
 #include "app_console.h"
 
 #include <esp_log.h>
 #include <nvs_flash.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 static const char *TAG = "app_main";
+
+static void heating_task(void *arg)
+{
+    (void)arg;
+    esp_err_t err = heating_ui_init();
+    ESP_LOGI(TAG, "dashboard start: %s", esp_err_to_name(err));
+    vTaskDelete(NULL);
+}
 
 extern "C" void app_main(void)
 {
@@ -58,6 +68,13 @@ extern "C" void app_main(void)
     /* Initialize hardware drivers */
     ESP_ERROR_CHECK(app_driver_init());
 
+    /* The four rooms and their saved topics: everything below reads them. */
+    ESP_ERROR_CHECK(heating_init());
+
+    /* The dashboard on the board's LCD, in its own task: a panel that will not
+     * come up must never hold the boot. */
+    xTaskCreate(heating_task, "heating_ui_start", 8192, NULL, 4, NULL);
+
     /* Initialize protocol solutions */
     /* Degrades rather than aborts: no PSRAM (or no `model` partition) leaves
      * voice unable to start, and a device whose other functions still work is
@@ -69,8 +86,8 @@ extern "C" void app_main(void)
         }
     }
 
-    ESP_ERROR_CHECK(app_display_init());
-
+    /* Wi-Fi SoftAP + mDNS + the settings page: the panel's own onboarding. */
+    heating_web_install();
     ESP_ERROR_CHECK(app_webui_init());
 
     ESP_ERROR_CHECK(app_mqtt_init());

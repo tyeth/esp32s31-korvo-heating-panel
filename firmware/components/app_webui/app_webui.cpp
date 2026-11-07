@@ -18,6 +18,14 @@
 
 static const char *TAG = "app_webui";
 
+/* The product's settings page (app_webui_set_settings_handler). */
+static esp_err_t (*s_settings_handler)(void) = NULL;
+
+void app_webui_set_settings_handler(esp_err_t (*handler)(void))
+{
+    s_settings_handler = handler;
+}
+
 /* vtype: 0 bool, 1 u8, 2 i16, 3 u16, 4 u32 (shared tag vocabulary). */
 typedef struct {
     const char *label;
@@ -147,6 +155,54 @@ static esp_err_t set_post(httpd_req_t *req)
     return ESP_FAIL;
 }
 
+/* Bridge between esp_http_server and the product's settings page, which is
+ * written against nothing but this file: it reads the request body through
+ * app_webui_read_request() and answers in chunks with app_webui_chunk_begin(),
+ * app_webui_send_chunk() and app_webui_chunk_end(). */
+static httpd_req_t *s_settings_req = NULL;   /* the request being served */
+
+static esp_err_t settings_page(httpd_req_t *req)
+{
+    s_settings_req = req;
+    return s_settings_handler ? s_settings_handler() : ESP_FAIL;
+}
+
+static esp_err_t settings_apply(httpd_req_t *req)
+{
+    s_settings_req = req;
+    if (s_settings_handler == NULL) {
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+    return s_settings_handler();
+}
+
+/* ── The product's settings page: the small API it is written against ── */
+
+void app_webui_chunk_begin(const char *content_type)
+{
+    if (s_settings_req == NULL) return;
+    httpd_resp_set_type(s_settings_req, content_type);
+}
+
+void app_webui_send_chunk(const char *text)
+{
+    if (s_settings_req == NULL || text == NULL) return;
+    httpd_resp_sendstr_chunk(s_settings_req, text);
+}
+
+void app_webui_chunk_end(void)
+{
+    if (s_settings_req == NULL) return;
+    httpd_resp_sendstr_chunk(s_settings_req, NULL);
+}
+
+int app_webui_read_request(char *buf, size_t len)
+{
+    if (s_settings_req == NULL || buf == NULL || len == 0) return -1;
+    return httpd_req_recv(s_settings_req, buf, len);
+}
+
 static void webui_start_server(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -165,6 +221,21 @@ static void webui_start_server(void)
         u.method = methods[i];
         u.handler = handlers[i];
         httpd_register_uri_handler(server, &u);
+    }
+
+    /* The product's own settings page: one URI serving both the form (GET) and
+     * its submission (POST), so it never knows esp_http_server's types. */
+    if (s_settings_handler != NULL) {
+        httpd_uri_t page = {};
+        page.uri = "/settings";
+        page.method = HTTP_GET;
+        page.handler = settings_page;
+        httpd_register_uri_handler(server, &page);
+        httpd_uri_t apply = {};
+        apply.uri = "/settings";
+        apply.method = HTTP_POST;
+        apply.handler = settings_apply;
+        httpd_register_uri_handler(server, &apply);
     }
 }
 
