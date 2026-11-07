@@ -221,7 +221,7 @@ static void render_page(bool saved)
                          "Because the server's certificate is issued for a different name than "
                          "the one dialled, the name is not verified; the chain still is.</p>");
     app_webui_send_chunk("<label>Broker root CA, PEM (optional — the device's built-in pack is "
-                         "used when empty)<br><textarea name=\"ca\" rows=4 "
+                         "used when empty; '-' clears a stored one)<br><textarea name=\"ca\" rows=4 "
                          "style=\"width:100%;background:#1e1e1e;color:#eee;border:1px solid "
                          "#333;border-radius:6px\"></textarea></label>");
 
@@ -325,7 +325,14 @@ static void apply_form(void)
                                                                  : app_mqtt_broker_uri(),
                                            app_mqtt_user(), pass);
         if (err != ESP_OK) ESP_LOGW(TAG, "broker not saved: %s", esp_err_to_name(err));
-        if (form_get("ca")[0]) app_mqtt_set_broker_ca(form_get("ca"));
+        /* "-" clears a pinned CA (the PEM itself may contain '-' characters, so
+         * only a lone one is the sentinel — the same rule the broker password
+         * uses in mqtt-setup). */
+        if (strcmp(form_get("ca"), "-") == 0) {
+            app_mqtt_set_broker_ca(NULL);
+        } else if (form_get("ca")[0]) {
+            app_mqtt_set_broker_ca(form_get("ca"));
+        }
     } else if (form_get("broker")[0]) {
         esp_err_t err = app_mqtt_set_broker(form_get("broker"), app_mqtt_user(),
                                            app_mqtt_user_password());

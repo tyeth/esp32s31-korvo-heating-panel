@@ -74,3 +74,12 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
 # ~360 KB before this).
 CONFIG_ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE=n
 CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n
+
+# esp-dsp's RISC-V hand-written assembly (dsps_dotprod_f32_arp4.S, reached from
+# esp-sr's prebuilt c_speech_features through esp_speech_features.c) faults on
+# this target: "Illegal instruction ... Instruction address misaligned" at the
+# esp.lp.setup hardware-loop instruction, which aborts the whole panel on the
+# first audio frame. The library is prebuilt against the optimized symbol, so
+# CONFIG_DSP_ANSI cannot be used (it links out dsps_dotprod_f32_arp4 entirely);
+# the fix is a generic one in firmware/components/esp_dsp_ansi_shim, which
+# provides that symbol from the C implementation ahead of esp-dsp's own archive.

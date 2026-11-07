@@ -402,6 +402,11 @@ static void mqtt_load_config(void)
     n = sizeof(s_uri);       nvs_get_str(h, "uri", s_uri, &n);
     n = sizeof(s_user);      nvs_get_str(h, "user", s_user, &n);
     n = sizeof(s_mqtt_pass); nvs_get_str(h, "mpass", s_mqtt_pass, &n);
+    char ca[4096] = {0};
+    size_t ca_len = sizeof(ca);
+    if (nvs_get_str(h, "ca", ca, &ca_len) == ESP_OK) {
+        strlcpy(s_ca_buf, ca, sizeof(s_ca_buf));
+    }
     nvs_close(h);
     /* The household's own broker, as the default for a panel nobody has set up
      * yet; the settings page overrides it. */
@@ -480,9 +485,20 @@ bool app_mqtt_configured(void)
 
 void app_mqtt_set_broker_ca(const char *pem)
 {
-    /* A fixed buffer, so a live session's certificate pointer stays valid; a
-     * new CA takes effect on the next (re)connect. */
+    /* Stored, so a pinned household stays pinned across reboots; the buffer is
+     * fixed so a live session's certificate pointer stays valid. */
     snprintf(s_ca_buf, sizeof(s_ca_buf), "%s", (pem != NULL) ? pem : "");
+
+    nvs_handle_t h;
+    if (nvs_open("zc_mqtt", NVS_READWRITE, &h) == ESP_OK) {
+        if (s_ca_buf[0] == 0) {
+            nvs_erase_key(h, "ca");
+        } else {
+            nvs_set_str(h, "ca", s_ca_buf);
+        }
+        nvs_commit(h);
+        nvs_close(h);
+    }
     if (s_ca_buf[0] == 0) return;
 
     /* If a session is already up it was built without this CA: restart it so
