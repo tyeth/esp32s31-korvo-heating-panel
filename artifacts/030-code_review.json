@@ -1,0 +1,154 @@
+{
+  "agent": "code_review",
+  "seq": 30,
+  "savedAt": "2026-11-07T16:58:34.696Z",
+  "report": {
+    "result": "pass",
+    "summary": "The display abort is fixed at the call site — the board panel's sub_type is \\\"rgb\\\", so lvgl_port_add_disp_rgb() replaces the asserting generic add path — and the esp-dsp crash is confirmed gone by the functional run; the only remaining item is the stray app_audio/CMakeLists.txt.new draft, still unfixed (warning).",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV> (qos1, retain 0); {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe each TRV state topic and each air-sensor topic per session; retained status zerocode/<mac12>/status with last-will. HTTP /settings (GET/POST), /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (generic DSP kernel, 21-phrase vocabulary, AFE + WakeNet)",
+          "app_display_init -> display_setup_task: lvgl_port_init, lvgl_port_add_disp_rgb for the RGB panel, lvgl_port_add_touch",
+          "heating_ui_init (1500 ms wait, LVGL lock, room cards, press/release event cbs, ui 250 ms / listen 1000 ms timers)",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (loads NVS config incl. CA, then STA or onboarding AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup (guided)"
+        ],
+        "expectedLogPatterns": [
+          "app_audio: \"DSP dot product: generic kernel linked (generic C (app_dsp_shim))\"",
+          "heating_voice: \"21 of 21 phrases registered\"; app_audio: \"Voice framework initialized\"",
+          "app_display: \"Display setup started\", \"Panel 'display_lcd' from board 'esp32_s31_korvo_1': generic_rgb rgb 800x480\" with no \"(not registered)\" suffix, then \"Display initialized\"",
+          "heating_ui: \"dashboard up (4 rooms)\"",
+          "app_mqtt: \"MQTT initialized (node <mac>)\"; \"MQTT connecting to mqtts://homeassistant.gdenu.fi:8123 (TLS, certificate name check skipped)\" on a fresh panel",
+          "heating_panel: \"heating panel logic up\"",
+          "app_main: \"ZeroCode AI firmware started\"; app_console: \"Console ready. Type 'help' for commands.\""
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button — click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD (800x480, board-owned frame buffer)",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "The display abort is fixed at the call site: the board panel's sub_type is \"rgb\" (gen_board_device_config.c:318-322), so lvgl_port_add_disp_rgb() is taken and the previous assert(io_handle != NULL) path is no longer reachable.",
+          "artifacts/device.log still holds the previous (aborting) build; the RGB fix has not yet been observed on a booted image.",
+          "Factory reset remains a 10 s single-button hold (documented deviation from the spec's SET+MODE).",
+          "TLS keeps skip_cert_common_name_check for every mqtts/ssl/:8883 URI (owner's request) with an optional persisted pinned CA.",
+          "The stray firmware/components/app_audio/CMakeLists.txt.new is still in the tree."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (lvgl_port_add_disp_rgb + lvgl_port_add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim's generic dot product",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (STA + onboarding SoftAP, CA in NVS)",
+            "part": "Wi-Fi"
+          },
+          {
+            "driver": "app_mqtt esp-mqtt over TLS",
+            "part": "MQTT broker"
+          }
+        ]
+      },
+      "filesReviewed": [
+        "artifacts/026-code_review.json",
+        "artifacts/027-functional_testing.json",
+        "artifacts/028-code_writing.json",
+        "artifacts/029-firmware_compilation.json",
+        "artifacts/device.log",
+        "firmware/components/app_display/app_display.cpp",
+        "firmware/main/app_main.cpp",
+        "firmware/components/gen_bmgr_codes/gen_board_device_config.c",
+        "firmware/managed_components/espressif__esp_lvgl_port/src/lvgl9/esp_lvgl_port_disp.c"
+      ],
+      "findings": [
+        {
+          "area": "build_hygiene",
+          "description": "The stray draft firmware/components/app_audio/CMakeLists.txt.new (registers a SRCS entry \"dsp_probe.c\" that exists nowhere) is still in the tree from two rounds ago.",
+          "evidence": "firmware/components/app_audio/CMakeLists.txt.new:8-12 `idf_component_register(SRCS \"app_audio.cpp\" \"dsp_probe.c\" …)`; the real CMakeLists.txt has no such entry and no dsp_probe.c exists under components/app_audio/.",
+          "failureScenario": "Anyone who copies the .new draft over CMakeLists.txt (its name and content invite it) makes app_audio fail to configure with a missing source file, and the voice framework disappears from the image.",
+          "file": "firmware/components/app_audio/CMakeLists.txt.new",
+          "line": 9,
+          "severity": "warning",
+          "suggestedChange": "Delete the stray CMakeLists.txt.new from the tree."
+        }
+      ],
+      "previousFindingsStatus": [
+        {
+          "evidence": "artifacts/027-functional_testing.json: app_audio logs \"DSP dot product: generic kernel linked\", \"21 of 21 phrases registered\", \"Voice framework initialized\" with no illegal-instruction trap; the link map (previous round) resolves dsps_dotprod_f32_arp4 from libapp_dsp_shim.a with no esp-dsp .S.obj.",
+          "finding": "fail — boot aborted in dsps_dotprod_f32_arp4 (esp-dsp asm)",
+          "status": "fixed (confirmed by the functional run)"
+        },
+        {
+          "evidence": "app_display.cpp:105-125 selects lvgl_port_add_disp_rgb(&board_disp_cfg, &board_rgb_cfg) when board_lcd_cfg->sub_type == ESP_BOARD_DEVICE_LCD_SUB_TYPE_RGB; gen_board_device_config.c:318-322 sets display_lcd sub_type \"rgb\"; esp_lvgl_port_disp.c:181-231 shows lvgl_port_add_disp_rgb does not assert io_handle (it routes through lvgl_port_add_disp_priv, whose asserts are disp_cfg/panel_handle/buffer_size/hres/vres, all satisfied by app_display.cpp:96-104).",
+          "finding": "fail — boot aborted at lvgl_port_add_disp assert(io_handle != NULL) for the RGB panel",
+          "status": "fixed at the call site (not yet observed on a booted image)"
+        },
+        {
+          "evidence": "app_display.cpp:105-125 RGB branch; app_main.cpp:85-89 single documented app_display_init()/heating_ui_init() path; zc_behaviors_init does not call app_display_init.",
+          "finding": "info — duplicate display bring-up in per-file diagnostics",
+          "status": "fixed (one init path)"
+        },
+        {
+          "evidence": "app_mqtt.cpp:199-203 skip_cert_common_name_check for every TLS URI.",
+          "finding": "warning — fleet-wide TLS certificate name check skipped",
+          "status": "accepted by owner (kept)"
+        }
+      ]
+    }
+  }
+}
