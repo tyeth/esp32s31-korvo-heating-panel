@@ -1,0 +1,39 @@
+{
+  "agent": "code_writing",
+  "seq": 37,
+  "savedAt": "2026-11-07T18:16:01.223Z",
+  "report": {
+    "result": "pass",
+    "summary": "Voice vocabulary fixed: each room now understands \"set the <room> to 20\", \"set the <room> to 21.5\" and \"<room> 21 and a half\" (targets carried per phrase), plus ordinary \"warm up\"/\"cool down\"/\"cancel\"; the phrase list and each recognised English phrase are now logged. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The model was English all along (mn7_en, WakeNet wn9_hiesp); the message you saw was MultiNet's 'nothing matched' outcome, which it reports when the words spoken are not in the vocabulary — not a wrong-language model. The real defect was the vocabulary: every room only understood 21 / 21.5 / 22, so 'set the bathroom to 20' had no matching phrase.",
+      "Rather than parse a number out of text at runtime, each phrase now carries its target in its id (20, 21.5, 21-and-a-half) — the recogniser matches what was actually said, and the published value is exactly that. The relative commands became ordinary English ('warm up' / 'cool down' instead of 'plus one' / 'minus one').",
+      "Added observability so the next run answers 'did it hear me?': the phrase list is printed as the window opens and a match prints the recognised English text with its confidence. The front button's 'single click (no handler)' line is gone as well — that was the generated weak hook's log, now routed to the product's push-to-talk."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_logic/heating_voice.cpp",
+      "firmware/components/app_logic/include/heating.h",
+      "firmware/components/app_audio/app_audio.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cd070 (2936944 B) in a 0x380000 partition, 20% free; check_code clean on both edited sources",
+    "findingsAddressed": [
+      {
+        "finding": "user report — 'set the bathroom to 20' not recognised; suspected non-English commands",
+        "fix": "model is English (mn7_en); vocabulary now includes 'set the <room> to 20' per room plus 'set the <room> to 21.5' and '<room> 21 and a half', each mapped to its spoken target; 'plus one'/'minus one' became 'warm up'/'cool down'"
+      },
+      {
+        "finding": "no way to tell what the recogniser holds or what it heard",
+        "fix": "phrase list logged at each listening window; recognised phrase id, confidence and English text logged on a match"
+      },
+      {
+        "finding": "'set_btn: single click (no handler)' noise in the log",
+        "fix": "the weak set_btn_on_single_click override now runs the product's push-to-talk"
+      }
+    ],
+    "openQuestions": [
+      "MultiNet's mn7_en takes the words it is given in a fixed grammar; if a room is renamed on the settings page, the vocabulary is fixed until reboot — which happens on the next power cycle at the latest.",
+      "Numbers other than 20 / 21.5 / 21-and-a-half are only reachable with the on-screen −/+; more spoken numbers would mean more phrases (MultiNet's list is finite and every phrase costs model memory)."
+    ]
+  }
+}
