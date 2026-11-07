@@ -1,0 +1,74 @@
+{
+  "agent": "code_writing",
+  "seq": 2,
+  "savedAt": "2026-11-07T15:04:55.865Z",
+  "report": {
+    "result": "pass",
+    "summary": "ESP32-S31 Korvo-1 voice + touch heating panel: four zigbee2mqtt TRV rooms on the board LCD, setpoints published straight to each TRV state topic, one-shot voice commands, SoftAP settings page — builds clean (2.92 MB in a 3.5 MB OTA slot).",
+    "report": {
+      "templateApplied": "korvo-heating-panel (own composition in artifacts/template.yaml: drivers/board_audio_codec, drivers/voice_mic_i2s, drivers/board_led_strip, drivers/board_button x2 (adc_button_group, boot_button), behaviors/sntp_time + console/diagnostics baseline; frameworks audio+display+webui+mqtt, partition_table 8mb-voice)",
+      "filesCreated": [
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_logic/heating.cpp",
+        "firmware/components/app_logic/heating_voice.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/heating_web.cpp"
+      ],
+      "filesModified": [
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_logic/CMakeLists.txt",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_mqtt/CMakeLists.txt",
+        "firmware/components/app_mqtt/include/app_mqtt.h",
+        "firmware/components/app_webui/app_webui.cpp",
+        "firmware/components/app_webui/include/app_webui.h",
+        "firmware/main/app_main.cpp",
+        "firmware/partitions.csv",
+        "firmware/sdkconfig.defaults"
+      ],
+      "components": [
+        {
+          "name": "app_logic",
+          "role": "the product: heating model + MQTT plumbing (heating.cpp), voice vocabulary (heating_voice.cpp), LVGL dashboard on the board LCD with GT1151 touch (heating_ui.cpp), /settings page (heating_web.cpp), strip status + button gestures + factory reset (app_logic.cpp)",
+          "notes": "WHOLE_ARCHIVE link so the weak button hooks are overridden; boot_btn_* overrides match the hooks' C++ linkage"
+        },
+        {
+          "name": "app_mqtt",
+          "role": "transport",
+          "notes": "added raw-session hooks (app_mqtt_client/subscribe/publish/set_data_handler/set_online, app_mqtt_broker_uri/user/user_password) and a 30 s Wi-Fi reconnect back-off — no second client, same session"
+        },
+        {
+          "name": "app_webui",
+          "role": "SoftAP + mDNS + HTTP server",
+          "notes": "added app_webui_set_settings_handler + a chunk/request-body API so the product's /settings page is served without esp_http_server types leaking into app_logic"
+        },
+        {
+          "name": "app_driver",
+          "role": "board codec + WS2812 through board-manager handles (generated)",
+          "notes": "untouched; the strip colour is driven through the generated HUE/SATURATION/BRIGHTNESS/POWER params"
+        }
+      ],
+      "managedComponents": [],
+      "pins": {
+        "3": "board I2S MCLK/BCLK (board-owned, speaker + mic)",
+        "4": "ES8389 I2S BCLK (voice mic, I2S port 1 listener)",
+        "5": "ES8389 I2S WS (voice mic)",
+        "6": "ES8389 I2S DIN -> mic data (voice mic)",
+        "7": "board codec PA enable (board-owned)",
+        "37": "board WS2812 status strip (board_led_strip)",
+        "61": "board BOOT button (push-to-talk / long-press permit-join)",
+        "0/1": "board I2C for GT1151 touch (board-owned)",
+        "40/43/44/45": "board RGB LCD (display framework)"
+      },
+      "consoleCommands": [
+        "heating set <room 0-3> <°C> (no args lists the rooms, their targets and topics)"
+      ],
+      "openQuestions": [
+        "The Korvo-1 exposes no free GPIO, and its ADC button group is a single iot_button device (SET/MODE/VOL-/VOL+ are not reported individually by the button driver). The spec's SET = push-to-talk and SET+MODE = factory reset therefore cannot be told apart on that group by the framework; I bound push-to-talk + long-press permit-join to the BOOT button and implemented SET+MODE by watching the group's press/release events. If the group's handles are not per-label, the combination degrades to 'hold the group 10 s' — verify on hardware.",
+        "GT1151 gives coordinates only (no gesture events), so a tap selects a card and a tap in the selected card's left/right third does −/+; the spec's separate on-screen mic and permit-join icons were not drawn (buttons carry them).",
+        "The board's DVP camera (and esp_video's USB-UVC device) were disabled in sdkconfig.defaults to fit the image; the board defaults re-enable the camera, so this is a deliberate override.",
+        "partitions.csv was rewritten to a 16 MB layout (3.5 MB OTA slots) because audio+display+mqtt builds a 2.92 MB app that overflows the 8 MB voice table's 2.25 MB slots — the scaffold baseline failed on exactly that."
+      ]
+    }
+  }
+}
