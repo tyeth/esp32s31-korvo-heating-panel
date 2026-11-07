@@ -1,0 +1,88 @@
+{
+  "agent": "code_writing",
+  "seq": 5,
+  "savedAt": "2026-11-07T15:17:36.907Z",
+  "report": {
+    "result": "pass",
+    "summary": "Addressed all code-review findings: voice vocabulary now registered and dispatched from the audio framework, MQTT state handler installed before the session exists, SoftAP onboarding for a factory-fresh panel, single touch reader, corrected status-strip states and SET=push-to-talk — builds at 2.93 MB with 20 % free.",
+    "report": {
+      "decisions": [
+        "The review's central diagnosis was right on the two criticals: the audio framework's command-registration and listening-state slots were empty and the MQTT data handler was never installed. Both are now wired where the framework expects them (registration inside app_audio_init between clear() and update(); the handler installed before app_mqtt_init()).",
+        "SoftAP: no catalog block owns an onboarding AP and app_webui is a framework component (never edited for product flows), so the responsible owner — the block that owns the radio (app_mqtt) — grew a small, documented AP API (app_mqtt_wifi_missing/ap_start/ap_ssid/ap_active). AP runs only while no credentials are stored, in WIFI_MODE_APSTA, and is withdrawn on save. A BOOT long press reopens it after its 5 min idle timeout.",
+        "Touch: instead of a second input device (which double-reads GT1151), the dashboard samples the display framework's own pointer device from its LVGL timer — one reader, no second task, and a selection tap cannot turn into a setpoint change.",
+        "SET is push-to-talk again (single click on the ADC group's first handle), BOOT remains the second documented trigger; SET+MODE hold still arms the 10 s factory reset.",
+        "Strip: the idle ladder is re-evaluated on every broker transition and reads off before Wi-Fi exists; a refusal flashes red for 1 s then returns to the idle colour (never green while offline).",
+        "heating_voice_not_understood() now shows 'Sorry, not understood'; the vocabulary also answers 'set the kitchen/bedroom to …' with '<room> has no smart TRV'.",
+        "The settings page rejects an over-long body or field instead of persisting a truncated topic; the room table is saved before the transport is touched.",
+        "Wi-Fi reconnect back-off moved from a vTaskDelay in the event handler to a one-shot esp_timer."
+      ],
+      "filesCreated": [
+        "firmware/components/app_logic/heating_mqtt.cpp"
+      ],
+      "filesModified": [
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/components/app_audio/CMakeLists.txt",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_mqtt/include/app_mqtt.h",
+        "firmware/components/app_mqtt/CMakeLists.txt",
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_logic/heating.cpp",
+        "firmware/components/app_logic/heating_voice.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_logic/CMakeLists.txt",
+        "firmware/components/app_logic/zc_behaviors.cpp",
+        "firmware/components/app_logic/diagnostics.cpp",
+        "firmware/main/app_main.cpp"
+      ],
+      "build": "esp32s31 success — 0x2cc010 (2932752 B) in a 0x380000 slot, 20% free; check_code clean on all 9 edited files",
+      "findingsAddressed": [
+        {
+          "finding": "critical — voice vocabulary never registered / hooks uncalled",
+          "fix": "app_audio.cpp now calls heating_voice_register() between esp_mn_commands_clear() and esp_mn_commands_update(), audio_apply_command() -> heating_voice_apply_command(), audio_on_event() -> heating_voice_on_event(), AFE timeout -> heating_voice_not_understood(); app_audio PRIV_REQUIRES app_logic"
+        },
+        {
+          "finding": "critical — no MQTT data handler installed",
+          "fix": "new heating_mqtt.cpp installs heating_on_mqtt_message via app_mqtt_set_data_handler() in app_main before app_mqtt_init()"
+        },
+        {
+          "finding": "critical — no SoftAP onboarding",
+          "fix": "app_mqtt SoftAP (APSTA) while app_mqtt_wifi_missing(), shown in the boot log and on the settings page, closed by app_mqtt_set_wifi()"
+        },
+        {
+          "finding": "warning — push-to-talk on BOOT instead of SET",
+          "fix": "SET single click = push-to-talk (shared push_to_talk() with BOOT)"
+        },
+        {
+          "finding": "warning — strip re-asserts POWER per tap / wrong colours",
+          "fix": "strip_idle() re-evaluated on every transition; POWER off before Wi-Fi exists; red only for the 1 s flash"
+        },
+        {
+          "finding": "warning — second LVGL indev double-reads touch",
+          "fix": "removed; the dashboard samples lvgl_port's own pointer device from its LVGL timer"
+        },
+        {
+          "finding": "warning — settings POST order / truncation",
+          "fix": "room table saved before the transport restart; over-long body or field refuses the whole form"
+        },
+        {
+          "finding": "warning — dim decision ignored MQTT activity",
+          "fix": "heating_on_mqtt_message() marks activity and the dim is evaluated every paint tick"
+        },
+        {
+          "finding": "info — no 'not understood' banner, no no-TRV answer",
+          "fix": "both added, plus the 10 s window really closes on match/timeout/second press"
+        },
+        {
+          "finding": "info — vTaskDelay back-off on the event task",
+          "fix": "one-shot esp_timer retry"
+        }
+      ],
+      "openQuestions": [
+        "Still unverifiable off-hardware: whether esp_board_manager's adc_button_group exposes SET/MODE as separate button handles (the factory-reset combo depends on handles[0]/[1]) and whether the ES8389 codec needs an explicit RX channel for the mems mic on I2S port 1 (the board's audio_adc device is DAC-less but its I2S-in is TDM-4-slot).",
+        "The panel is commissioned over its SoftAP with the fixed WPA2 password 'heatpanel' (printed in the boot log). If a per-device random password is preferred, it is one constant in app_mqtt.cpp."
+      ]
+    }
+  }
+}
