@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:31:32.300Z",
+  "updatedAt": "2026-11-07T14:37:51.538Z",
   "diagram": {
     "schema": "esp-viz/3",
     "nodes": [
@@ -16,6 +16,12 @@
             "role": "main"
           }
         ]
+      },
+      {
+        "id": "trvs",
+        "kind": "part",
+        "name": "Zigbee2MQTT TRVs (4x, via the MQTT broker — no direct wiring)",
+        "component": "other"
       }
     ],
     "wires": [],
