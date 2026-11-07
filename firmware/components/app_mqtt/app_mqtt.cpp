@@ -246,11 +246,14 @@ static void wifi_retry_cb(void *arg)
  * The handlers only wake s_net_task; there is no code of ours that runs
  * in-line on the framework's shared 'sys_evt' task — not even the connect.
  *
- * That task overflows on a configured boot, and the extra stack it holds is
- * taken from internal DRAM at WiFi init. So the system event task is made small
- * (CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE, sdkconfig.defaults) and all of our
- * handling — the connect, the disconnect log + retry, the broker start — runs
- * here on this task, which has its own stack.
+ * That task overflows on a configured boot even with 4 KB (the panel aborts
+ * there on every power cycle), and the extra stack it holds is taken from
+ * internal DRAM inside esp_wifi_init(), where the Wi-Fi driver also carves its
+ * DMA pools — so it cannot simply be made large. So the system event task is
+ * made SMALL (CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE, sdkconfig.product) and
+ * every Wi-Fi/IP event the panel cares about is delivered through a QUEUE of our
+ * own: esp_event_handler_register_with() registers the handler on the default
+ * loop with our own handler data, and this task — not the loop's — runs it.
  */
 #define NET_EV_DISCONNECTED 0x01
 #define NET_EV_GOT_IP       0x02
@@ -259,35 +262,26 @@ static void wifi_retry_cb(void *arg)
 static TaskHandle_t s_net_task = NULL;
 static esp_timer_handle_t s_net_debounce = NULL;
 static volatile bool s_net_wanted = false;
+/* Filled by the loop's dispatch (esp_event_handler_register_with passes our
+ * data pointer straight through), consumed by this task. */
+typedef struct {
+    esp_event_base_t base;
+    int32_t          id;
+} net_event_t;
+static QueueHandle_t s_net_queue = NULL;
 
 static void net_task(void *arg)
 {
     (void)arg;
     for (;;) {
-        uint32_t bits = 0;
-        if (xTaskNotifyWait(0, 0xFFFFFFFF, &bits, portMAX_DELAY) != pdTRUE) continue;
-
-        if (bits & NET_EV_START) {
+        net_event_t ev = {};
+        if (xQueueReceive(s_net_queue, &ev, portMAX_DELAY) != pdTRUE) continue;
+        if (ev.base == WIFI_EVENT && ev.id == WIFI_EVENT_STA_START) {
             /* The station interface is up: join. */
             esp_wifi_connect();
+            continue;
         }
-
-        if (bits & NET_EV_DISCONNECTED) {
-            ESP_LOGW(TAG, "Wi-Fi disconnected — retrying in %d s", RETRY_BACKOFF_S);
-            if (s_retry_timer == NULL) {
-                const esp_timer_create_args_t args = {
-                    .callback = &wifi_retry_cb,
-                    .name = "mqtt_wifi_retry",
-                };
-                esp_timer_create(&args, &s_retry_timer);
-            }
-            if (s_retry_timer) {
-                esp_timer_stop(s_retry_timer);
-                esp_timer_start_once(s_retry_timer, (uint64_t)RETRY_BACKOFF_S * 1000000ULL);
-            }
-        }
-
-        if (bits & NET_EV_GOT_IP) {
+        if (ev.base == IP_EVENT && ev.id == IP_EVENT_STA_GOT_IP) {
             ESP_LOGI(TAG, "Wi-Fi got IP");
             /* Start the broker session a moment after the IP settles: the
              * TLS/DNS and socket setup of a fresh client is what gets close to
@@ -307,6 +301,21 @@ static void net_task(void *arg)
             } else {
                 mqtt_start_client();
             }
+            continue;
+        }
+        if (ev.base == WIFI_EVENT && ev.id == WIFI_EVENT_STA_DISCONNECTED) {
+            ESP_LOGW(TAG, "Wi-Fi disconnected — retrying in %d s", RETRY_BACKOFF_S);
+            if (s_retry_timer == NULL) {
+                const esp_timer_create_args_t args = {
+                    .callback = &wifi_retry_cb,
+                    .name = "mqtt_wifi_retry",
+                };
+                esp_timer_create(&args, &s_retry_timer);
+            }
+            if (s_retry_timer) {
+                esp_timer_stop(s_retry_timer);
+                esp_timer_start_once(s_retry_timer, (uint64_t)RETRY_BACKOFF_S * 1000000ULL);
+            }
         }
     }
 }
@@ -317,17 +326,15 @@ static void net_start_cb(void *arg)
     if (s_net_wanted) mqtt_start_client();
 }
 
-static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
+/* The handler the default loop calls: it copies the two fields we act on into
+ * our queue and returns. Nothing else of ours ever runs on sys_evt. */
+static void wifi_event_handler(void *handler_arg, esp_event_base_t base, int32_t event_id, void *event_data)
 {
-    (void)arg; (void)event_data;
-    if (s_net_task == NULL) return;
-    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        xTaskNotify(s_net_task, NET_EV_START, eSetBits);
-    } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        xTaskNotify(s_net_task, NET_EV_DISCONNECTED, eSetBits);
-    } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        xTaskNotify(s_net_task, NET_EV_GOT_IP, eSetBits);
-    }
+    (void)event_data;
+    QueueHandle_t q = (QueueHandle_t)handler_arg;
+    if (q == NULL) return;
+    net_event_t ev = { .base = base, .id = event_id };
+    xQueueSend(q, &ev, 0);          /* full queue = the event is stale anyway */
 }
 
 static void mqtt_wifi_start(void)
@@ -728,16 +735,21 @@ esp_err_t app_mqtt_init(void)
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
 
-    /* Our own task handles the network events (disconnect log + retry, broker
-     * start); the handlers only notify it — see net_task(). */
+    /* Our own task handles the network events (connect, disconnect log +
+     * retry, broker start); the loop's handler only queues them — see
+     * net_task(). The queue is the handler's data, so nothing has to be global
+     * for the dispatch to find it. */
     if (s_net_task == NULL) {
-        if (xTaskCreate(net_task, "mqtt_net", 4096, NULL, 5, &s_net_task) != pdPASS) {
+        s_net_queue = xQueueCreate(8, sizeof(net_event_t));
+        if (s_net_queue == NULL || xTaskCreate(net_task, "mqtt_net", 4096, NULL, 5, &s_net_task) != pdPASS) {
             ESP_LOGE(TAG, "network event task not created — Wi-Fi events unhandled");
             s_net_task = NULL;
         }
     }
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL));
+    /* This IDF has no default-loop accessor: the plain register goes to the
+     * default loop and still passes our queue through as the handler's data. */
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, s_net_queue));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, s_net_queue));
 
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);

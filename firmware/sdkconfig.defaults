@@ -68,9 +68,11 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
 
 # The framework's default event-loop task ("sys_evt") dispatches the Wi-Fi/IP
-# events and was observed to overflow its stack on a configured boot. The value
-# is set in sdkconfig.product, the slot that overrides the board definition's own
-# defaults (the board manager reports its file has higher priority).
+# events. It overflowed its stack on this panel's configured boot — in the
+# framework's own dispatch, not in anything of ours (app_mqtt's handler only
+# copies the event into a queue). The value is set in sdkconfig.product, the slot
+# that overrides the board definition's own defaults (the board manager reports
+# its file has higher priority).
 
 # The board definition (gen_bmgr_codes/board_manager.defaults) enables the DVP
 # camera video device; esp_video also enables the USB-UVC video device on this
