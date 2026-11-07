@@ -226,7 +226,13 @@ static void mqtt_start_client(void)
 
 /* The retry runs on the esp_timer task, never on the event task. */
 #define RETRY_BACKOFF_S 30
+/* A start requested from the event path waits this long, so the client comes
+ * up once the association's event storm has passed. */
+#define NET_START_DELAY_S 1
 static esp_timer_handle_t s_retry_timer = NULL;
+
+static void net_start_cb(void *arg);
+static void mqtt_start_client(void);
 
 static void wifi_retry_cb(void *arg)
 {
@@ -235,29 +241,91 @@ static void wifi_retry_cb(void *arg)
     esp_wifi_connect();
 }
 
+/* Connecting from the sys_evt task, as the framework's own example does: it is
+ * the documented place to act on STA_START. The stack of that task is sized by
+ * CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE (raised in sdkconfig.defaults); the
+ * log-based work (disconnect, got-IP) runs on a task of ours instead. */
+static void wifi_connect_cb(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    (void)arg; (void)base; (void)event_id; (void)event_data;
+    esp_wifi_connect();
+}
+
+/* ── Wi-Fi/IP work, off the default event loop ────────────────────────
+ *
+ * The event handlers only wake s_net_task; the handler itself never logs,
+ * creates timers or starts a client. A configured panel that overran the event
+ * task's stack died with "A stack overflow in task sys_evt" on the Wi-Fi event
+ * right after MQTT init — work of ours on that task, not something the task is
+ * sized for.
+ */
+#define NET_EV_DISCONNECTED 0x01
+#define NET_EV_GOT_IP       0x02
+
+static TaskHandle_t s_net_task = NULL;
+static esp_timer_handle_t s_net_debounce = NULL;
+static volatile bool s_net_wanted = false;
+
+static void net_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        uint32_t bits = 0;
+        if (xTaskNotifyWait(0, 0xFFFFFFFF, &bits, portMAX_DELAY) != pdTRUE) continue;
+
+        if (bits & NET_EV_DISCONNECTED) {
+            ESP_LOGW(TAG, "Wi-Fi disconnected — retrying in %d s", RETRY_BACKOFF_S);
+            if (s_retry_timer == NULL) {
+                const esp_timer_create_args_t args = {
+                    .callback = &wifi_retry_cb,
+                    .name = "mqtt_wifi_retry",
+                };
+                esp_timer_create(&args, &s_retry_timer);
+            }
+            if (s_retry_timer) {
+                esp_timer_stop(s_retry_timer);
+                esp_timer_start_once(s_retry_timer, (uint64_t)RETRY_BACKOFF_S * 1000000ULL);
+            }
+        }
+
+        if (bits & NET_EV_GOT_IP) {
+            ESP_LOGI(TAG, "Wi-Fi got IP");
+            /* Start the broker session a moment after the IP settles: the
+             * TLS/DNS and socket setup of a fresh client is what gets close to
+             * the limits of a small task, and doing it once, after the storm of
+             * events that follows an association, is what keeps boot predictable. */
+            if (s_net_debounce == NULL) {
+                const esp_timer_create_args_t args = {
+                    .callback = &net_start_cb,
+                    .name = "mqtt_net_start",
+                };
+                esp_timer_create(&args, &s_net_debounce);
+            }
+            if (s_net_debounce) {
+                s_net_wanted = true;
+                esp_timer_stop(s_net_debounce);
+                esp_timer_start_once(s_net_debounce, (uint64_t)NET_START_DELAY_S * 1000000ULL);
+            } else {
+                mqtt_start_client();
+            }
+        }
+    }
+}
+
+static void net_start_cb(void *arg)
+{
+    (void)arg;
+    if (s_net_wanted) mqtt_start_client();
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     (void)arg; (void)event_data;
-    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "Wi-Fi disconnected — retrying in %d s", RETRY_BACKOFF_S);
-        /* Never sleep on the event task: every other default-loop handler
-         * (IP events, mdns, httpd) waits behind it. The retry is one shot. */
-        if (s_retry_timer == NULL) {
-            const esp_timer_create_args_t args = {
-                .callback = &wifi_retry_cb,
-                .name = "mqtt_wifi_retry",
-            };
-            esp_timer_create(&args, &s_retry_timer);
-        }
-        if (s_retry_timer) {
-            esp_timer_stop(s_retry_timer);
-            esp_timer_start_once(s_retry_timer, (uint64_t)RETRY_BACKOFF_S * 1000000ULL);
-        }
+    if (s_net_task == NULL) return;
+    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        xTaskNotify(s_net_task, NET_EV_DISCONNECTED, eSetBits);
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ESP_LOGI(TAG, "Wi-Fi got IP");
-        mqtt_start_client();
+        xTaskNotify(s_net_task, NET_EV_GOT_IP, eSetBits);
     }
 }
 
@@ -658,8 +726,20 @@ esp_err_t app_mqtt_init(void)
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
+
+    /* Our own task handles the network events (disconnect log + retry, broker
+     * start); the handlers only notify it — see net_task(). */
+    if (s_net_task == NULL) {
+        if (xTaskCreate(net_task, "mqtt_net", 4096, NULL, 5, &s_net_task) != pdPASS) {
+            ESP_LOGE(TAG, "network event task not created — Wi-Fi events unhandled");
+            s_net_task = NULL;
+        }
+    }
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL));
+    /* STA_START is the one event answered in place: esp_wifi_connect() is what
+     * the framework documents for it, and it returns immediately. */
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_START, wifi_connect_cb, NULL));
 
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
