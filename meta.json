@@ -1,0 +1,16 @@
+{
+  "id": "esp32s31-korvo-board-mw6i4evk",
+  "name": "ESP32S31 Korvo Board voice HA controller",
+  "description": "using the ESP32S31 Korvo board to create a voice controlled dashboard for my home assistant dashboard, so the TRV valves for each room are controllable",
+  "chip": "esp32s31",
+  "frameworks": [
+    "audio",
+    "display",
+    "webui",
+    "mqtt"
+  ],
+  "owner": "fe454eda-8e9f-4743-b90a-daabfc45887a",
+  "createdAt": "2026-11-07T14:31:21.141Z",
+  "updatedAt": "2026-11-07T14:31:21.141Z",
+  "path": "quick"
+}

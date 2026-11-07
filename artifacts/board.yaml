@@ -1,0 +1,6 @@
+schema: zc-board/1
+selected: esp32s31_module
+chip: esp32s31
+bmgr:
+  board: esp32s31_module
+  resolved_from: fallback

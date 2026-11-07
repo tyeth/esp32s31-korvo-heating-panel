@@ -1,0 +1,12 @@
+# The product composition — which code blocks this firmware is made of.
+#
+# chip: esp32s31
+# frameworks: [audio, display, webui, mqtt]
+#
+# Start from a catalog product (list_templates, then get_template with
+# format:'yaml'), paste it here, and edit — or author from scratch. Then
+# call apply_template with no arguments: it reads this file, validates it,
+# and generates the firmware tree. Every write/edit of this file is
+# validated immediately; findings come back in the tool result.
+#
+# The hardware is NOT declared here — it lives in artifacts/board.yaml.

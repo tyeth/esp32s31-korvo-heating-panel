@@ -1,0 +1,75 @@
+{
+  "seq": 0,
+  "savedAt": "2026-11-07T14:31:21.529Z",
+  "details": {
+    "id": "esp32s31-korvo-board-mw6i4evk",
+    "name": "ESP32S31 Korvo Board voice HA controller",
+    "description": "using the ESP32S31 Korvo board to create a voice controlled dashboard for my home assistant dashboard, so the TRV valves for each room are controllable",
+    "chip": "esp32s31",
+    "emulatorSupported": true,
+    "deviceDataNote": "A value that differs per physical device and that the user must supply when flashing — an API key, a token, a server address — goes in the spec's `deviceData`: [{ key, label, description, type?: \"data\" | \"file\", required? }] (key: letters, digits and _, at most 15). Never the value itself: the flash page asks the user for it and writes it to the device, and the firmware reads it there. `description` tells the firmware writer what the code does with it. A selected framework's own credentials are already covered (see its `flash` onboarding) — do not repeat them.",
+    "timezoneNote": "If the product does anything by the local time of day (a schedule, a night window, a daily limit, timestamps a person reads), ask where the device will live and record it in the spec as `timezone: { iana: \"Europe/Berlin\" }` (the IANA zone name). The host fills in `timezone.posix` — the POSIX TZ string the firmware sets with setenv(\"TZ\") (the sntp_time block's `tz`) — and refuses a name that is not a real zone. Never a fixed UTC offset: it is wrong for half the year wherever clocks change.",
+    "idfVersion": "6.2.0-dev (master @ e9da155)",
+    "frameworks": [
+      "audio",
+      "display",
+      "webui",
+      "mqtt"
+    ],
+    "audio": {
+      "version": "2.5.1",
+      "requires": {
+        "partition": "model"
+      },
+      "capabilities": {
+        "wakeWord": "hi esp",
+        "commandLanguage": "en"
+      }
+    },
+    "display": {
+      "version": "9.5"
+    },
+    "webui": {
+      "version": "1.11",
+      "transport": [
+        "wifi"
+      ],
+      "onboarding": [
+        "softap",
+        "mdns"
+      ]
+    },
+    "mqtt": {
+      "specVersion": "3.1.1",
+      "capabilities": {
+        "discovery": "home_assistant"
+      },
+      "transport": [
+        "wifi"
+      ],
+      "onboarding": [
+        "console"
+      ],
+      "console": {
+        "setup": "mqtt-setup — guided: asks for Wi-Fi, then the broker URI and its credentials",
+        "commands": [
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]"
+        ],
+        "api": "app_mqtt_set_wifi, app_mqtt_set_broker, app_mqtt_configured (app_mqtt.h); app_console_read_line (app_console.h)",
+        "note": "Beside Matter or RainMaker, Wi-Fi is onboarded through them: mqtt-wifi does not exist and mqtt-setup asks for the broker only."
+      }
+    },
+    "interpretation": {
+      "peripherals": [
+        {
+          "part": null,
+          "role": "TRV radiator valves for each room, controlled from the dashboard",
+          "evidence": "TRV valves for each room are controllable"
+        }
+      ],
+      "unsure": "How it talks to Home Assistant (and thus the TRVs) is not stated — MQTT, its own API, or a web page is left open."
+    },
+    "createdAt": "2026-11-07T14:31:21.141Z"
+  }
+}
