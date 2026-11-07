@@ -1,0 +1,147 @@
+{
+  "agent": "code_review",
+  "seq": 26,
+  "savedAt": "2026-11-07T16:54:17.695Z",
+  "report": {
+    "result": "pass",
+    "summary": "The critical is genuinely fixed: the link map now resolves dsps_dotprod_f32_arp4 from libapp_dsp_shim.a with no esp-dsp .S.obj in the image, and the real reference plus WHOLE_ARCHIVE make it stick; the only new item is a stray CMakeLists.txt.new draft referencing a nonexistent dsp_probe.c (warning, inert today).",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV> (qos1, retain 0); {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe each TRV state topic and each air-sensor topic per session; retained status zerocode/<mac12>/status with last-will. HTTP /settings (GET/POST), /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (logs the DSP kernel, registers vocabulary, starts AFE/MultiNet)",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (loads NVS config incl. CA, then STA or onboarding AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup (guided)"
+        ],
+        "expectedLogPatterns": [
+          "app_audio: \"DSP dot product: generic kernel linked (generic C (app_dsp_shim))\"",
+          "app_audio: \"Voice framework initialized\"; heating_voice: \"21 of 21 phrases registered\"",
+          "app_mqtt: \"no broker saved — default mqtts://homeassistant.gdenu.fi:8123\" on a fresh panel; \"MQTT connecting to … (TLS, certificate name check skipped)\"",
+          "heating_ui: \"dashboard up (4 rooms)\"",
+          "heating_panel: \"heating panel logic up\"; \"front buttons bound (1) — click = push-to-talk, double click = dismiss, hold 10000 ms = factory reset\"",
+          "app_main: \"ZeroCode AI firmware started\"; app_console: \"Console ready. Type 'help' for commands.\""
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button — click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "artifacts/device.log is still the log from the previous (broken) build (buildId 9b3ea3ff), so the most recent image has not yet been booted; the link map is the evidence that the faulting assembly is gone.",
+          "The factory reset remains a 10 s single-button hold (documented deviation from SET+MODE).",
+          "TLS still skips the certificate name check for every mqtts/ssl/:8883 URI (owner's choice); chain verification and an optional persisted pinned CA remain.",
+          "None of the previously unverified spec features (dashboard, touch, LED colours, MQTT round-trips, onboarding page) have been observed on a running image yet."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (lvgl_port_add_disp / lvgl_port_add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on the generic dot-product kernel from app_dsp_shim",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (STA + onboarding SoftAP, CA in NVS)",
+            "part": "Wi-Fi"
+          },
+          {
+            "driver": "app_mqtt esp-mqtt over TLS",
+            "part": "MQTT broker"
+          }
+        ]
+      },
+      "filesReviewed": [
+        "artifacts/023-code_review.json",
+        "artifacts/024-code_writing.json",
+        "artifacts/025-firmware_compilation.json",
+        "firmware/components/app_dsp_shim/CMakeLists.txt",
+        "firmware/components/app_dsp_shim/dsps_dotprod_arp4.c",
+        "firmware/components/app_dsp_shim/include/app_dsp_shim.h",
+        "firmware/components/app_audio/CMakeLists.txt",
+        "firmware/components/app_audio/CMakeLists.txt.new",
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/build/zerocode_ai_firmware.map"
+      ],
+      "findings": [
+        {
+          "area": "build_hygiene",
+          "description": "A stale draft was committed as a real file: firmware/components/app_audio/CMakeLists.txt.new, which registers a SRCS entry \"dsp_probe.c\" that does not exist in the tree. It is inert today (CMake/.new), but any tooling or human that \"applies\" it — or a future generator that copies CMakeLists.txt.new over CMakeLists.txt — makes the app_audio component fail to configure (source file not found).",
+          "evidence": "firmware/components/app_audio/CMakeLists.txt.new:8-12 `idf_component_register(SRCS \"app_audio.cpp\" \"dsp_probe.c\" …)`; search for dsp_probe under firmware/components/app_audio/** matches only that file, and the real CMakeLists.txt has no such SRCS entry.",
+          "failureScenario": "Someone replaces CMakeLists.txt with the .new draft while chasing this link fix: CMake aborts with 'Cannot find source file dsp_probe.c', the build never starts, and the voice fix looks regressed. Nothing in the tree references or explains the file.",
+          "file": "firmware/components/app_audio/CMakeLists.txt.new",
+          "line": 9,
+          "severity": "warning",
+          "suggestedChange": "Delete the stray CMakeLists.txt.new and its nonexistent dsp_probe.c reference from the tree."
+        }
+      ],
+      "previousFindingsStatus": [
+        {
+          "evidence": "firmware/build/zerocode_ai_firmware.map:96844-96845 `dsps_dotprod_f32_arp4  esp-idf/app_dsp_shim/libapp_dsp_shim.a(dsps_dotprod_arp4.c.obj)`; :39185-39187 `.text.dsps_dotprod_f32_arp4 0x4001c76a 0x28 … libapp_dsp_shim.a`; a search for `dsps_dotprod_f32_arp4.S.obj` in the map returns no matches, so esp-dsp's faulting assembly is no longer in the image. app_dsp_shim is registered WHOLE_ARCHIVE (app_dsp_shim/CMakeLists.txt:17-22) and app_audio.cpp:209-211 calls app_dsp_dotprod_kernel(), a real reference.",
+          "finding": "critical — app_dsp_shim was never linked, so the image still faulted in esp-dsp's dsps_dotprod_f32_arp4 assembly",
+          "status": "fixed (verified in the link map); not yet confirmed on a booted image — artifacts/device.log still belongs to the previous build"
+        },
+        {
+          "evidence": "app_dsp_shim/dsps_dotprod_arp4.c:40-47 — plain accumulate loop, reported as byte-for-byte esp-dsp's ANSI kernel.",
+          "finding": "info — shim arithmetic differs from esp-dsp's C implementation",
+          "status": "accepted (writer asserts this is the ANSI body; arithmetic untouched)"
+        },
+        {
+          "evidence": "app_mqtt.cpp:199-203 skip_cert_common_name_check for every TLS URI.",
+          "finding": "warning — fleet-wide TLS certificate name check skipped",
+          "status": "accepted by owner (kept)"
+        }
+      ]
+    }
+  }
+}
