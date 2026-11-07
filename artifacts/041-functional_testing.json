@@ -1,0 +1,120 @@
+{
+  "agent": "functional_testing",
+  "seq": 41,
+  "savedAt": "2026-11-07T18:43:16.008Z",
+  "report": {
+    "result": "fail",
+    "summary": "The display boot-loop is fixed (single display bring-up, no assert), but a fresh panel now crashes on its first boot: with Wi-Fi credentials stored it aborts with \"A stack overflow in task sys_evt has been detected\" right after MQTT init, and the emulator dies before the console comes up.",
+    "report": {
+      "tests": [
+        {
+          "name": "Previously failing scenario — display double bring-up / assert after the RGB panel line (boot loop)",
+          "category": "display",
+          "result": "pass",
+          "details": "One display_setup pass: the second call is refused with a warning instead of starting a second lvgl_port_init. The RGB panel and the GT1151 touch register, 'Display initialized' follows, and there is no 'Stopped LVGL task', no assert and no reboot loop in this boot. 'Starting LVGL task' still appears twice — the board manager starts it once and the port does not start a second task, and nothing dies afterwards.",
+          "evidence": "I (1034) LVGL: Starting LVGL task / I (1034) app_display: Display setup started / W (1034) app_display: app_display_init() called twice — ignored (use app_display_ready()) / I (1034) app_display: Panel 'display_lcd' from board 'esp32_s31_korvo_1': generic_rgb rgb 800x480 / I (1044) app_display: Touch 'lcd_touch' from board 'esp32_s31_korvo_1' / I (1044) app_display: Display initialized"
+        },
+        {
+          "name": "Previously failing scenario — full boot to dashboard, web UI, MQTT and console",
+          "category": "boot",
+          "result": "pass",
+          "details": "On a fresh panel (no Wi-Fi stored) the whole boot sequence completes in order: voice, display, dashboard, settings page, web UI, MQTT init with the onboarding SoftAP, SNTP clock, panel logic, console and the firmware start line. The firmware stays up and answers commands.",
+          "evidence": "I (1144) heating_ui: dashboard up (4 rooms) / I (1164) app_webui: Web UI ready — http://zerocode-0001.local/ / I (1224) app_mqtt: MQTT initialized (node 240ac4000001) / I (2084) app_console: Console ready. Type 'help' for commands. / I (2084) app_main: ZeroCode AI firmware started"
+        },
+        {
+          "name": "Boot stability with stored Wi-Fi credentials — no panic / stack overflow / reset",
+          "category": "stability",
+          "result": "fail",
+          "details": "After setting Wi-Fi ('mqtt-wifi') and a broker, a console 'reboot' gives a boot that aborts with a stack-overflow panic in the system event task. The last application line is 'MQTT initialized (node …)' and the very next event (the Wi-Fi driver/password event that follows) kills the panel; the emulator process exits (code 1) before app_logic and the console, so the panel is stuck off after a restart of every configured unit. This is a critical watchdog-style crash: the firmware is configured and cannot boot.",
+          "evidence": "I (1634) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2 / I (1664) wifi:mode : sta (24:0a:c4:00:00:01) / I (1664) app_mqtt: MQTT initialized (node 240ac4000001) / [WARN machine] Firmware abort on hart0: '***ERROR*** A stack overflow in task sys_evt has been detected.' / Firmware abort: ***ERROR*** A stack overflow in task sys_evt has been detected. / #1 vApplicationStackOverflowHook () at components/freertos/FreeRTOS-Kernel/portable/riscv/port.c:730 / [host] emulator stopped: esp-emu exited on its own (exit code 1)"
+        },
+        {
+          "name": "Console commands (help, heating, uptime, chip, version, heap, mem)",
+          "category": "console",
+          "result": "pass",
+          "details": "On the running panel all registered commands answer coherently: help lists mqtt-wifi/mqtt-broker/mqtt-setup, uptime/chip/version/log/heap/heating/reboot/factory_reset/mem; uptime reports '0d 00h 00m 32s'; heap reports per-region figures. Compare to product_testing's report: the console does come up on a fresh panel.",
+          "evidence": "uptime: 0d 00h 00m 32s (32 s) / heap: 8BIT free 12560787, INTERNAL 65579, DMA-capable 34487"
+        },
+        {
+          "name": "Room table and offline refusal (f8, f12)",
+          "category": "console",
+          "result": "pass",
+          "details": "'heating' lists exactly the four spec rooms with the four zigbee2mqtt TRV state topics; with no broker session it says 'panel is offline (nothing is published)' and a setpoint attempt is refused with 'offline — nothing published (the panel has no broker session)' — not queued, nothing published, as the spec requires.",
+          "evidence": "0 Bathroom target 20.0 zigbee2mqtt/0xa4c1383b5b3d7063 … 3 Living room target 20.0 zigbee2mqtt/0xa4c13829aa5a7009 / panel is offline (nothing is published) / heating set 2 21 -> offline — nothing published (the panel has no broker session)"
+        },
+        {
+          "name": "Wi-Fi/broker settings persist across a reboot",
+          "category": "commissioning",
+          "result": "fail",
+          "details": "The settings are accepted and saved ('wifi config saved — connecting', 'broker config saved'), but the boot that loads them is the one that crashes: the panel comes up station-only and dies at the first Wi-Fi event after MQTT init. So a unit that has been commissioned is not usable after a power cycle — the spec's power-blip behaviour ('comes back on the last saved targets') cannot hold. The persistence itself is present (the station mode shows the stored credentials were read), the crash is what makes the scenario fail.",
+          "evidence": "wifi config saved — connecting / broker config saved / after reboot: I (1634) W wifi: Password length matches WPA2 standards … / Firmware abort: A stack overflow in task sys_evt"
+        },
+        {
+          "name": "MQTT setpoint publish to the TRV state topic, empty-payload state poll, permit-join (f4, f16, f10)",
+          "category": "connectivity",
+          "result": "unverified",
+          "details": "Needs a reachable broker; none exists on the emulator and the panel never keeps a session long enough here. The request path was only exercised to its offline refusal."
+        },
+        {
+          "name": "TRV/air-sensor payload parsing, heating/off derivation, staleness greying (f15, f18, f7)",
+          "category": "connectivity",
+          "result": "unverified",
+          "details": "Requires broker payloads and the screen."
+        },
+        {
+          "name": "Dashboard rendering, touch selection and +/- 0.5 °C, banners, dimming (f2, f3, f19, f13)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "'dashboard up (4 rooms)' is logged but what is painted and how taps land can only be seen on the panel. The product_testing report of a black screen was taken on the previous build and needs a re-run on this one."
+        },
+        {
+          "name": "LCD shows the room cards (f2/f8)",
+          "category": "display",
+          "result": "unverified",
+          "details": "Physical observation; deferred to the hardware session."
+        },
+        {
+          "name": "Status LED colours (f6, f12)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "The strip is bound and driven by app_logic, but colour is a physical observation."
+        },
+        {
+          "name": "Wake word / push-to-talk / spoken setpoints",
+          "category": "voice",
+          "result": "unverified",
+          "details": "Needs a microphone or a button press. Vocab note: the runtime registers 17 phrases ('17 of 17 English phrases registered') — three variants per room plus kitchen, bedroom, 'warm up', 'cool down', cancel — against the 21 of the previous build. The spec's example 'set the office to 21' (whole number 21) is still not a phrase; the phrase-based probes ('twelve one'?) need the audio path to confirm."
+        },
+        {
+          "name": "Onboarding through the SoftAP from a phone",
+          "category": "commissioning",
+          "result": "unverified",
+          "details": "The AP comes up with its settings URL; joining it from a real client is a user/hardware step."
+        },
+        {
+          "name": "Factory reset (10 s button hold or console)",
+          "category": "hardware",
+          "result": "unverified",
+          "details": "Not run this round: the configured device is in the crash state and the console path would have to be tried on a fresh boot; the physical hold cannot be done here."
+        }
+      ],
+      "deviceInfo": {
+        "chip": "ESP32-S31 rev v0.0, 2 cores, 16 MB flash, 16 MB PSRAM",
+        "appVersion": "zerocode_ai_firmware 1.0.0, ESP-IDF e9da155a, ELF SHA256 7c2372d66",
+        "freeHeap": "~12.56 MB free overall; internal DRAM ~65.6 KB free (30.7 KB largest); DMA-capable ~34.5 KB",
+        "bootTime": "fresh-panel boot reaches the console ~2.1 s after reset; configured boot aborts ~1.7 s after reset",
+        "connectivity": "no broker peer on the emulator; onboarding SoftAP up when unconfigured; with stored Wi-Fi the panel crashes right after MQTT init",
+        "crash": "stack overflow in task sys_evt (vApplicationStackOverflowHook, port.c:730), emulator exit code 1"
+      },
+      "notes": [
+        "Fresh/flash-erased boot is healthy; the crash only appears on a boot that has stored Wi-Fi credentials, so flash (which wipes NVS) always starts clean and the failure surfaces on the first reboot after commissioning.",
+        "This is a different crash from the one product_testing reported: that one (assert right after the panel line, LVGL task stopped) is fixed — the display now registers once and boots on.",
+        "Source-level lead for the fix: 'sys_evt' is the default event loop task; the only handlers the product registers are app_mqtt's wifi_event_handler for WIFI_EVENT/ESP_EVENT_ANY_ID and IP_EVENT (app_mqtt.cpp:661-662, registered in app_mqtt_init right where the crash points). Its work on a wifi event appears to exceed the default event-loop task stack; either move it off sys_evt (own task / queue) or raise CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE. No crash dump could be obtained because the panic aborts before the console exists on that boot.",
+        "Non-fatal lines, not counted as failures: sdmmc_init_ocr 0x107 (no SD card), sccb_i2c transmit error then a correct ov3660 detection, 'i2s_common: GPIO 4/5 is not usable', 'gpio: conflict found for GPIO[7]', phy RF-calibration fallback, the emulator's failed-handshake warning for its virtual Wi-Fi client, and the usual Wi-Fi rate/power dump.",
+        "On a fresh panel the boot still prints the 'MQTT not configured' warning and opens the SoftAP, although the review describes compiled-in default Wi-Fi 'free4all' and default broker — on this build the factory state is the SoftAP onboarding path, which matches the spec's commissioning step.",
+        "artifacts/device.log is from this session (fresh boot, console exercise, configured reboot that crashed); the earlier build's lines are gone."
+      ],
+      "suggestedFix": "The panic is a stack overflow in FreeRTOS's sys_evt task (the default event loop), on the Wi-Fi event that follows app_mqtt_init when stored credentials exist. Move the Wi-Fi/IP event handling out of the default event-loop callback into a small dedicated task (handler only queues the event), and/or raise CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE with headroom; then confirm a boot with stored Wi-Fi credentials reaches 'Console ready' and 'ZeroCode AI firmware started' with no stack-overflow hook, and that a second reboot afterwards behaves the same."
+    }
+  }
+}
