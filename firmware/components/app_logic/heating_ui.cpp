@@ -99,6 +99,14 @@ static void touch_activity(void)
 
 /* ── the model's hooks ───────────────────────────────────────────────── */
 
+/** Activity outside a press: a reading, a link change, a heard command, a
+ *  setpoint. Anything the dashboard mirrors waking up counts. */
+void heating_ui_poke(void)
+{
+    touch_activity();
+    s_refresh = true;
+}
+
 void heating_ui_invalidate(void)
 {
     s_refresh = true;
@@ -115,6 +123,7 @@ void heating_ui_select(int idx)
 
 void heating_ui_banner(const char *text)
 {
+    touch_activity();          /* a banner is action — the screen stays bright */
     snprintf(s_banner_text, sizeof(s_banner_text), "%s", text ? text : "");
     s_banner_until = now_ms() + BANNER_MS;
     s_banner_dirty = true;
@@ -472,10 +481,21 @@ esp_err_t heating_ui_init(void)
 
     s_last_activity = now_ms();
 
-    /* app_display_init() has already run lvgl_port_init() by the time the
-     * board's display handle exists; wait for it, then build our screen under
-     * the LVGL lock so no other task sees a half-built object tree. */
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    /* app_display_init() starts LVGL, the panel and the touch in ITS OWN task.
+     * Waiting a fixed 1.5 s and then taking the LVGL lock raced that task on
+     * real hardware (the log showed the second bring-up aborting right after
+     * "Panel 'display_lcd' …"): wait for the display to report ready instead,
+     * with a bounded timeout, and only then touch LVGL. */
+    bool ready = false;
+    for (int i = 0; i < 300; i++) {              /* up to 30 s */
+        if (app_display_ready() || app_display_failed()) break;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    ready = app_display_ready();
+    if (!ready) {
+        ESP_LOGE(TAG, "no panel from the display framework — cards unavailable");
+        return ESP_ERR_TIMEOUT;                  /* the panel keeps running */
+    }
 
     if (!lvgl_port_lock(5000)) {
         ESP_LOGE(TAG, "LVGL is not running — no dashboard");

@@ -26,6 +26,15 @@ static app_driver_handle_t s_handle = 0;
 /* Assigned by the panel driver block's display_node_init slot. */
 static lv_display_t *s_disp = NULL;
 
+/* Published for the product's own screen (app_display.h): LVGL and the panel
+ * are up, or the bring-up gave up. Written by display_setup_task, read by
+ * whoever wants to draw. */
+static volatile bool s_ready = false;
+static volatile bool s_failed = false;
+
+bool app_display_ready(void)  { return s_ready; }
+bool app_display_failed(void) { return s_failed; }
+
 
 
 /* Hardware/param bus -> widgets. Runs OFF the LVGL task, so the whole
@@ -64,6 +73,7 @@ static void display_setup_task(void *arg)
     const lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     if (lvgl_port_init(&port_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "lvgl_port_init failed — display disabled");
+        s_failed = true;
         vTaskDelete(NULL);
         return;
     }
@@ -151,6 +161,7 @@ static void display_setup_task(void *arg)
 
     if (s_disp == NULL) {
         ESP_LOGE(TAG, "no display panel block in this product — add drivers/display_ili9341_spi");
+        s_failed = true;
         vTaskDelete(NULL);
         return;
     }
@@ -163,12 +174,27 @@ static void display_setup_task(void *arg)
     s_handle = app_driver_register_solution("display", display_driver_cb, NULL);
 
     ESP_LOGI(TAG, "Display initialized");
+    s_ready = true;                /* only now may a product draw on it */
     vTaskDelete(NULL);
 }
 
 esp_err_t app_display_init(void)
 {
-    xTaskCreate(display_setup_task, "display_setup", 6144, NULL, 4, NULL);
+    /* One LVGL task, one page: a second call would start a second setup task
+     * against the same port (LVGL has no second task to give) and the two would
+     * fight over the display. The product's screen waits via
+     * app_display_ready() instead of coming through here. */
+    static bool started = false;
+    if (started) {
+        ESP_LOGW(TAG, "app_display_init() called twice — ignored (use app_display_ready())");
+        return ESP_OK;
+    }
+    started = true;
+    if (xTaskCreate(display_setup_task, "display_setup", 6144, NULL, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "display setup task not created");
+        s_failed = true;
+        return ESP_ERR_NO_MEM;
+    }
     ESP_LOGI(TAG, "Display setup started");
     return ESP_OK;
 }

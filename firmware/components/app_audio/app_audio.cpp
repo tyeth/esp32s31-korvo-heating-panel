@@ -165,6 +165,7 @@ static void audio_detect_task(void *arg)
         if (s_btn_window && !listening) {
             listening = true;
             s_mn->clean(s_mn_data);
+            heating_ui_poke();   /* the request just woke the screen */
             ESP_LOGI(TAG, "button press — listening for a command");
             audio_on_event(1);
             continue;
@@ -173,6 +174,7 @@ static void audio_detect_task(void *arg)
         if (!listening && res->wakeup_state == WAKENET_DETECTED) {
             listening = true;
             s_mn->clean(s_mn_data);
+            heating_ui_poke();   /* the wake word just woke the screen */
             ESP_LOGI(TAG, "wake word detected — listening for a command");
             audio_on_event(1);
             continue;

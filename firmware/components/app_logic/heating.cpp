@@ -342,9 +342,8 @@ void heating_on_mqtt_message(const char *topic, int topic_len, const char *data,
             } else {
                 apply_payload(&room->room, data, data_len, "temperature");
             }
-            /* An incoming message is one of the spec's wake sources. */
-            heating_ui_touch_activity();
-            heating_ui_invalidate();
+            /* Whatever the product mirrors changed: wake the screen and repaint. */
+            heating_ui_poke();
             return;
         }
     }

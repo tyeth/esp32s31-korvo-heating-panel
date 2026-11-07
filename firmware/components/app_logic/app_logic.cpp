@@ -136,6 +136,11 @@ static esp_timer_handle_t s_red_timer = NULL;
  * the panel doubles as a device that must be set up over the console. */
 static bool s_touchless = false;
 
+/* The last time anything the dashboard mirrors changed (a reading, an
+ * online/offline transition, a heard command, a lamp; a button press). Only
+ * used to decide when the screen may dim. */
+static volatile int64_t s_last_event_ms = 0;
+
 /* ── status strip ────────────────────────────────────────────────────── */
 
 static void set_strip(uint8_t hue, uint8_t sat, uint8_t bri)
@@ -163,7 +168,7 @@ static void strip_idle(void)
     else if (s_refused)              set_strip(HUE_RED,   SAT_MAX, BRI_DAY);
     else if (heating_online())       set_strip(HUE_GREEN, SAT_MAX, BRI_DAY);
     else if (app_mqtt_configured())  set_strip(0, 0, BRI_DIM);   /* connecting */
-    else if (s_touchless && !app_mqtt_wifi_missing())
+    else if (s_touchless)
                                      set_strip(HUE_RED, 0, BRI_DIM);  /* console only */
     else                             strip_off();                /* not set up */
 }
@@ -421,8 +426,9 @@ esp_err_t app_logic_init(void)
     heating_broker_ready(false);
 
     /* The panel may already have come up before this ran: point the strip at
-     * what the panel actually offers. */
+     * what the panel actually offers, and start the dashboard's idle clock. */
     s_touchless = !heating_ui_has_touch();
+    s_last_event_ms = esp_timer_get_time() / 1000;
 
     /* "Connecting" until the broker session is up (off before Wi-Fi exists). */
     strip_idle();

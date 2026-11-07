@@ -169,6 +169,8 @@ void heating_ui_rejected_ui(void);
 esp_err_t heating_ui_init(void);
 /** A press anywhere (touch or button) restores full brightness. */
 void heating_ui_touch_activity(void);
+/** Product activity worth waking the screen for (a heard command, a setpoint). */
+void heating_ui_poke(void);
 
 /** MQTT: the product's own state handler and transport glue. */
 void heating_mqtt_install(void);
