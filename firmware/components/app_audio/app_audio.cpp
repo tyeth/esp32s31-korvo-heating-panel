@@ -167,6 +167,7 @@ static void audio_detect_task(void *arg)
             s_mn->clean(s_mn_data);
             heating_ui_poke();   /* the request just woke the screen */
             ESP_LOGI(TAG, "button press — listening for a command");
+            heating_voice_print_vocabulary();
             audio_on_event(1);
             continue;
         }
@@ -176,6 +177,7 @@ static void audio_detect_task(void *arg)
             s_mn->clean(s_mn_data);
             heating_ui_poke();   /* the wake word just woke the screen */
             ESP_LOGI(TAG, "wake word detected — listening for a command");
+            heating_voice_print_vocabulary();
             audio_on_event(1);
             continue;
         }
@@ -188,7 +190,8 @@ static void audio_detect_task(void *arg)
         if (st == ESP_MN_STATE_DETECTED) {
             esp_mn_results_t *mn = s_mn->get_results(s_mn_data);
             if (mn && mn->num > 0) {
-                ESP_LOGI(TAG, "command phrase %d", mn->phrase_id[0]);
+                ESP_LOGI(TAG, "command phrase %d (%.0f%%): \"%s\"", mn->phrase_id[0],
+                         mn->prob[0] * 100, mn->string);
                 /* One press, one request: the window is over as soon as the
                  * phrase is in, whatever opened it. */
                 s_btn_window = false;

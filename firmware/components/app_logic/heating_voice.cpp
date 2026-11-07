@@ -14,6 +14,19 @@
  * esp_mn_commands_clear() and esp_mn_commands_update(), and a recognised id
  * comes back to heating_voice_apply_command().
  *
+ * What is spoken and what happens:
+ *
+ *   "set the bathroom to 20"        bathroom  → 20.0 °C   (published now)
+ *   "set the office to 21.5"        office    → 21.5 °C
+ *   "hallway 22" / "living room 19" the same, without the "set the … to"
+ *   "bathroom 21 and a half"        the same, said with a half
+ *   "warm up" / "cool down"         the room selected on screen, ±1 °C
+ *   "cancel"                        nothing is published
+ *   "set the kitchen to 20"         "Kitchen has no smart TRV"
+ *
+ * English only, US English model (mn7_en): the numbers more than one aside are
+ * spoken above / after the room, never as a bare digit.
+ *
  * The outcome lands on the screen: there are no spoken replies.
  */
 
@@ -22,6 +35,7 @@
 #include "app_config.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <esp_log.h>
@@ -29,15 +43,17 @@
 
 static const char *TAG = "heating_voice";
 
-/* Phrase ids: four consecutive per room (a fixed target said four ways), then
- * the relative commands and the two rooms with no valve. */
+/* Phrase ids: three per room (one per spoken number, see k_variants), then the
+ * two rooms with no valve, then the relative commands. An id carries both what
+ * to do and which number was said — the words after the room are what the user
+ * actually said, not a digit recovered from text. */
 #define VOICE_ID_SET_BASE      1600
-#define VOICE_ID_SET_VARIANTS  4
+#define VOICE_ID_SET_VARIANTS  3
 #define VOICE_ID_NO_TRV_BASE   (VOICE_ID_SET_BASE + HEATING_ROOMS * VOICE_ID_SET_VARIANTS)
 #define VOICE_ID_NO_TRV_COUNT  2
 #define VOICE_ID_WARM_UP       (VOICE_ID_NO_TRV_BASE + VOICE_ID_NO_TRV_COUNT)
 #define VOICE_ID_COOL_DOWN     (VOICE_ID_WARM_UP + 1)
-#define VOICE_ID_CANCEL        (VOICE_ID_WARM_UP + 2)
+#define VOICE_ID_CANCEL        (VOICE_ID_COOL_DOWN + 1)
 
 #define VOICE_MAX_PHRASES      (HEATING_ROOMS * VOICE_ID_SET_VARIANTS + VOICE_ID_NO_TRV_COUNT + 3)
 #define VOICE_PHRASE_MAX       64
@@ -45,6 +61,15 @@ static const char *TAG = "heating_voice";
 /* The rooms that exist in the house but carry no smart TRV — naming one gets
  * "Kitchen has no smart TRV" instead of silence (spec failureModes). */
 static const char *const k_unheated[VOICE_ID_NO_TRV_COUNT] = { "Kitchen", "Bedroom" };
+
+/* The spoken numbers. Each phrase says the target it means, so the published
+ * value is exactly what the user said; the three are the living-room values
+ * from the spec's examples, said the three ways a person says them. */
+static const int16_t k_variant_tenth[VOICE_ID_SET_VARIANTS] = {
+    200,   /* "set the <room> to 20"        */
+    215,   /* "set the <room> to 21.5"      */
+    210,   /* "<room> 21 and a half"        */
+};
 
 typedef struct {
     int16_t     id;
@@ -66,20 +91,22 @@ void heating_voice_set_selected_room(int idx)
 /* Phrase text for table entry @p i; @p buf must hold VOICE_PHRASE_MAX bytes. */
 static void phrase_text(int i, char *buf, size_t len)
 {
+    /* English, as a person says it: the room name in the middle, the number at
+     * the end. The MultiNet model takes them and prints the recognised phrase
+     * as English words in the boot log. */
     static const char *const k_variants[VOICE_ID_SET_VARIANTS] = {
-        "set the %s to 21",
+        "set the %s to 20",
         "set the %s to 21.5",
         "%s 21 and a half",
-        "%s 22",
     };
     int set_n = HEATING_ROOMS * VOICE_ID_SET_VARIANTS;
     if (i < set_n) {
         snprintf(buf, len, k_variants[i % VOICE_ID_SET_VARIANTS], s_table[i].room);
     } else if (i < set_n + VOICE_ID_NO_TRV_COUNT) {
-        snprintf(buf, len, "set the %s to 21", s_table[i].room);
+        snprintf(buf, len, k_variants[0], s_table[i].room);
     } else {
         int rel = i - (set_n + VOICE_ID_NO_TRV_COUNT);
-        snprintf(buf, len, "%s", rel == 0 ? "plus one" : (rel == 1 ? "minus one" : "cancel"));
+        snprintf(buf, len, "%s", rel == 0 ? "warm up" : (rel == 1 ? "cool down" : "cancel"));
     }
 }
 
@@ -125,7 +152,7 @@ esp_err_t heating_voice_register(void)
         }
     }
     s_registered = true;
-    ESP_LOGI(TAG, "%d of %d phrases registered", added, s_table_n);
+    ESP_LOGI(TAG, "%d of %d English phrases registered", added, s_table_n);
     return ESP_OK;
 }
 
@@ -142,12 +169,11 @@ static void apply(int idx, int16_t tenth)
             char msg[64];
             /* Report the value that went on the wire — the card itself only
              * moves when the TRV reports back. */
-            int16_t t = (int16_t)(((tenth + HEATING_STEP_TENTH / 2) / HEATING_STEP_TENTH) * HEATING_STEP_TENTH);
-            if (t < HEATING_MIN_TENTH) t = HEATING_MIN_TENTH;
-            if (t > HEATING_MAX_TENTH) t = HEATING_MAX_TENTH;
+            int16_t t = heating_clamp_tenth(tenth);
             snprintf(msg, sizeof(msg), "%s \xE2\x86\x92 %d.%d\xC2\xB0" "C",
                      room->cfg.name, (int)(t / 10), (int)((t % 10 + 10) % 10));
             heating_ui_banner(msg);
+            heating_ui_poke();
             break;
         }
         case HEATING_REQ_ALREADY_SET:
@@ -187,11 +213,25 @@ void heating_voice_apply_command(int phrase_id)
     }
     int rel = phrase_id - VOICE_ID_SET_BASE;
     if (rel < 0 || rel >= HEATING_ROOMS * VOICE_ID_SET_VARIANTS) return;
-    static const int16_t k_tenth[VOICE_ID_SET_VARIANTS] = { 210, 215, 215, 220 };
-    apply(rel / VOICE_ID_SET_VARIANTS, k_tenth[rel % VOICE_ID_SET_VARIANTS]);
+    apply(rel / VOICE_ID_SET_VARIANTS, k_variant_tenth[rel % VOICE_ID_SET_VARIANTS]);
 }
 
 /* ── the audio framework's other hooks ───────────────────────────────── */
+
+/* The words this panel knows, logged as the window opens. If what was said is
+ * not on this list, nothing will recognise it — that is what the log is for. */
+void heating_voice_print_vocabulary(void)
+{
+    char phrase[VOICE_PHRASE_MAX];
+    static char line[1024];
+    size_t w = 0;
+    w += (size_t)snprintf(line + w, sizeof(line) - w, "voice vocabulary (%d phrases):", s_table_n);
+    for (int i = 0; i < s_table_n && w + VOICE_PHRASE_MAX + 4 < sizeof(line); i++) {
+        phrase_text(i, phrase, sizeof(phrase));
+        w += (size_t)snprintf(line + w, sizeof(line) - w, "%s%s", i ? " |" : "", phrase);
+    }
+    ESP_LOGI(TAG, "%s", line);
+}
 
 void heating_voice_on_event(int listening)
 {
@@ -201,8 +241,10 @@ void heating_voice_on_event(int listening)
     }
 }
 
-/* The window closed without a recognised command (timeout or a second
- * press): the spec's 3 s explanation, and the strip back to its idle state. */
+/* The window closed without a recognised command (timeout or a second press):
+ * the spec's 3 s explanation, and the strip back to its idle state. The panel
+ * does not say why in the log beyond this — the recogniser's own log states
+ * which model and which phrases it holds, so the words can be checked there. */
 void heating_voice_not_understood(void)
 {
     heating_ui_listening(false);

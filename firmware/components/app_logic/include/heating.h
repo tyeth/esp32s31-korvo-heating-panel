@@ -135,7 +135,10 @@ void heating_broker_ready(bool online);
  */
 esp_err_t heating_voice_register(void);
 void heating_voice_apply_command(int phrase_id);
-/** Relative commands ("plus one") act on the room selected on screen. */
+/** Log the exact word list the recogniser holds (called as the window opens, so
+ *  a mis-said or missing phrase can be read straight off the console). */
+void heating_voice_print_vocabulary(void);
+/** Relative commands ("warm up" / "cool down") act on the selected room. */
 void heating_voice_set_selected_room(int idx);
 /** What the panel currently offers (for a button that opens the window). */
 bool heating_ui_has_touch(void);
