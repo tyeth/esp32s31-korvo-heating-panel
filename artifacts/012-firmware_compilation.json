@@ -1,0 +1,29 @@
+{
+  "agent": "firmware_compilation",
+  "seq": 12,
+  "savedAt": "2026-11-07T16:02:32.982Z",
+  "report": {
+    "result": "pass",
+    "summary": "Rebuild of updated firmware succeeded for esp32s31; no compile or link errors.",
+    "report": {
+      "binaryPath": "firmware/build/zerocode_ai_firmware.bin",
+      "board": "esp32-s31-korvo-1",
+      "buildId": "cb:zerocode-build-lambda:61a5e144-9427-45e8-9a0e-8fbd4134b7cd",
+      "exitCode": 0,
+      "firmwareSize": "0x2cc0d0 (2932944 B)",
+      "flashUsage": "app partition 0x380000 (3670016 B); 0xb3f30 (737072 B) = 20% free; bootloader 0x5700 (22272 B), 9% free",
+      "mergedImage": "firmware/build/merged_flash.bin (0xa092c7 bytes, flash at 0x0)",
+      "notes": [
+        "Incremental direct-ninja rebuild; only app_audio.cpp recompiled (7 ninja steps, 6.6 s), then relinked and imaged.",
+        "Binary size essentially unchanged vs the previous build (0x2cc110 -> 0x2cc0d0, -64 B); partition headroom still 20%.",
+        "eFuse virtualization verified in sdkconfig and sdkconfig.product checked for an override; board manager inputs unchanged (bmgr step skipped).",
+        "Ship artifacts produced: merged_flash.bin plus delta upload (12 files)."
+      ],
+      "previousBuildId": "cb:zerocode-build-lambda:9b3ea3ff-fb31-422a-b3e9-1882121c2699",
+      "ramUsage": "not reported in build output (no static DRAM/IRAM summary line in log tail)",
+      "status": "success",
+      "target": "esp32s31",
+      "warnings": []
+    }
+  }
+}
