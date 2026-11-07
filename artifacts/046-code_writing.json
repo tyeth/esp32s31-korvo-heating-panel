@@ -1,0 +1,37 @@
+{
+  "agent": "code_writing",
+  "seq": 46,
+  "savedAt": "2026-11-07T19:03:50.220Z",
+  "report": {
+    "result": "pass",
+    "summary": "Root cause of the repeat was Kconfig precedence, not missing code: the stack value is now in sdkconfig.product (verified as 4096 in the generated header, was 2304) and STA_START no longer runs on the event task. Builds clean at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The failing critical repeated from the last round, so I re-examined the diagnosis rather than re-applying it: my work-moved-off-the-event-task change WAS in the code (the handler only notified mqtt_net), but the stack setting was NOT in the image — sdkconfig.defaults is overridden by the board definition's board_manager.defaults, which the build explicitly reports as higher priority. So sys_evt stayed at its 2304-byte default and still overflowed its own dispatch (esp_wifi_get_if_mac / register_rxcb / esp_netif_set_mac on STA_START).",
+      "Fixed at the right level: the value now lives in sdkconfig.product, the documented slot that overrides the board's defaults. Verified in the built artefacts — build/config/sdkconfig.h says CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE 4096, where it said 2304 before.",
+      "Also removed the last piece of work of ours from that task: STA_START now notifies mqtt_net, which calls esp_wifi_connect(). The handlers do nothing but a task notification.",
+      "Tried a -D compile definition first; the build proved it wrong (it collided with the generated header's #define, -Werror redefined). Reverted to the Kconfig slot so the generated sdkconfig.h stays the single source of truth."
+    ],
+    "filesCreated": [
+      "firmware/sdkconfig.product"
+    ],
+    "filesModified": [
+      "firmware/sdkconfig.defaults",
+      "firmware/cmake/frameworks/audio/pre_project.cmake",
+      "firmware/components/app_mqtt/app_mqtt.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cd3e0 (2937824 B) in a 0x380000 partition, 20% free; build/config/sdkconfig.h verified: CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE 4096",
+    "findingsAddressed": [
+      {
+        "finding": "fail — configured boot still aborts with 'A stack overflow in task sys_evt' right after MQTT initialized (same signature as last round)",
+        "fix": "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096 moved to sdkconfig.product so it overrides board_manager.defaults and reaches the generated header (verified); STA_START work moved off sys_evt onto the mqtt_net task"
+      },
+      {
+        "finding": "reported fix 'not in the build' (sdkconfig.defaults had no effective value)",
+        "fix": "root cause identified as Kconfig precedence, not a missing line: the value is present in defaults but the board layer wins; sdkconfig.product is the slot with priority"
+      }
+    ],
+    "openQuestions": [
+      "The report's voice note stands: the spec's example 'set the office to 21' has no phrase (vocabulary has 20 / 21.5 / 'twenty one and a half'). Adding a whole-number 21 variant is a one-line change but widens the grammar to four phrases per room; I left it for the owner to confirm rather than change the recognised set unasked."
+    ]
+  }
+}
