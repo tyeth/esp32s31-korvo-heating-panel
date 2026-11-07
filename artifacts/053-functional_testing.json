@@ -1,0 +1,107 @@
+{
+  "agent": "functional_testing",
+  "seq": 53,
+  "savedAt": "2026-11-07T22:17:34.405Z",
+  "report": {
+    "result": "fail",
+    "summary": "Progress: the configured boot now reaches the console and keeps running (the sys_evt overflow right after MQTT init is gone), but stability still fails — an idle panel aborts with \"stack overflow in task mdns\" 15–30 s after boot, and the reboot out of the configured session was followed by another \"stack overflow in task sys_evt\".",
+    "report": {
+      "deviceInfo": {
+        "appVersion": "zerocode_ai_firmware 1.0.0, ESP-IDF e9da155a, ELF SHA256 532cf8b80",
+        "bootTime": "fresh boot reaches the console ~2.1 s after reset; configured boot reaches the console ~2.6 s after reset",
+        "chip": "ESP32-S31 rev v0.0, 2 cores, 16 MB flash, 16 MB PSRAM",
+        "connectivity": "no broker peer on the emulator (dials fail 'Host is unreachable'); with stored Wi-Fi the panel boots station-only and keeps running; onboarding SoftAP when unconfigured",
+        "crashes": "2 this session: one stack overflow in task 'mdns' (before reboot), one stack overflow in task 'sys_evt' (right after the reboot, ~700 ms in)",
+        "freeHeap": "~12.55 MB free overall; internal DRAM ~54 KB free (20 KB largest); DMA-capable ~32 KB (20 KB largest)"
+      },
+      "notes": [
+        "The original configured-boot critical moved: the crash after 'MQTT initialized' is gone, and the configured boot now reaches the console — but the reboot was still followed by a 'stack overflow in task sys_evt' abort on this build, so the reboot-isolation question is not fully closed.",
+        "The second crash is a different task altogether: 'mdns' overflows 15–30 s after boot while the panel sits at the REPL with nothing else going on. That makes the stable panel an unreliable target for a user even though it survives the boot.",
+        "Both crashes pass through the same vApplicationStackOverflowHook (port.c:730) with a 4-frame backtrace — the emulator's leak-detection/stack fill is doing the reporting; on real silicon these tasks may simply corrupt neighbours instead, so they must be treated as real stack problems, not as emulator artefacts, until shown otherwise.",
+        "Non-fatal lines, not counted on their own: sdmmc_init_ocr 0x107 (no SD card), sccb_i2c transmit error then a correct ov3660 detection, 'i2s_common: GPIO 4/5 is not usable', 'gpio: conflict found for GPIO[7]', phy RF-calibration fallback, the emulator's failed-handshake warning for its virtual Wi-Fi client, and the usual Wi-Fi rate/power dump."
+      ],
+      "suggestedFix": "Two remaining stack sizes are too small on this panel and should be measured, not guessed: (1) the mDNS task — CONFIG_MDNS_TASK_STACK_SIZE (default 4096) is exceeded 15–30 s into an idle session; raise it (and/or reduce what the mdns callbacks do) until the post-boot window stays clean; (2) sys_evt on the configured reboot — still 8 KB per the header yet it overflows once right after the reboot, so instrument the high-water mark (uxTaskGetStackHighWaterMark for sys_evt, mqtt_net and the wifi driver task) on the first configured boot rather than raising the number again. Verify by: fresh boot → mqtt-wifi + mqtt-broker → reboot → leave it running 3 minutes with only periodic 'uptime' — no stack-overflow hook in that window, twice in a row.",
+      "tests": [
+        {
+          "category": "display",
+          "details": "Every boot this session registered the panel exactly once: the duplicate init is refused with a warning, the RGB panel and GT1151 touch are registered and 'Display initialized' follows; no LVGL teardown and no assert.",
+          "evidence": "W app_display: app_display_init() called twice — ignored (use app_display_ready()) / I app_display: Panel 'display_lcd' from board 'esp32_s31_korvo_1': generic_rgb rgb 800x480 / I app_display: Display initialized",
+          "name": "Display single bring-up / no assert (previously failing)",
+          "result": "pass"
+        },
+        {
+          "category": "boot",
+          "details": "Fresh (factory) panel: full sequence to 'Console ready' and 'ZeroCode AI firmware started', stays up, answers help/heating/uptime/heap; dashboard up (4 rooms), settings page and web UI come up, MQTT init with the onboarding SoftAP.",
+          "evidence": "I (1144) heating_ui: dashboard up (4 rooms) / I (1224) app_mqtt: SoftAP 'Korvo-Heating-0002' … / I (2084) app_console: Console ready. Type 'help' for commands. / I (2084) app_main: ZeroCode AI firmware started",
+          "name": "Fresh-panel boot to dashboard, web UI, MQTT init and console",
+          "result": "pass"
+        },
+        {
+          "category": "console",
+          "details": "help / heating / uptime / heap all answer; 'heating' lists exactly the four spec rooms with the four zigbee2mqtt TRV state topics and the 5..30 °C range; offline setpoints are refused, not queued.",
+          "evidence": "0 Bathroom target 20.0 zigbee2mqtt/0xa4c1383b5b3d7063 … 3 Living room target 20.0 zigbee2mqtt/0xa4c13829aa5a7009 / panel is offline (nothing is published)",
+          "name": "Room table, setpoint surface and offline refusal (f8, f4, f16, f12)",
+          "result": "pass"
+        },
+        {
+          "category": "commissioning",
+          "details": "mqtt-wifi + mqtt-broker save, survive the reboot, and the configured boot now runs station-only with the panel logic up, LED set ON (connecting/online colour), and the console reachable — the previous 'never reaches the console' failure is gone.",
+          "evidence": "wifi config saved — connecting / broker config saved / after reboot: I (1664) app_mqtt: MQTT initialized (node 240ac4000001) / I (1674) app_driver: Set status ('led_strip'): ON / I (1674) heating_panel: heating panel logic up / I (2614) app_console: Console ready.",
+          "name": "Boot with stored Wi-Fi credentials reaches the console and stays up (previously failing)",
+          "result": "pass"
+        },
+        {
+          "category": "stability",
+          "details": "Stability is not achieved yet: (a) an idle fresh panel aborts with 'A stack overflow in task mdns has been detected' 15–30 s after boot and the emulator exits; (b) the console 'reboot' out of that configured session boots and is then followed by 'A stack overflow in task sys_evt' ~700 ms in, before app_logic. Both are device-visible aborts (panic, no restart) under the same vApplicationStackOverflowHook.",
+          "evidence": "[WARN machine] Firmware abort on hart0: '***ERROR*** A stack overflow in task mdns has been detected.' … CPU fault at PC=0x2F00BA94 after 889730782 cycles / and on the following boot: [WARN machine] Firmware abort on hart0: '***ERROR*** A stack overflow in task sys_evt has been detected.' / [host] emulator stopped: esp-emu exited on its own (exit code 1)",
+          "name": "Boot and idle stability — no crash / stack overflow / reset",
+          "result": "fail"
+        },
+        {
+          "category": "connectivity",
+          "details": "No broker peer exists on the emulator (dial fails 'Host is unreachable'); the publish, subscribe and state-poll paths cannot be observed.",
+          "name": "MQTT setpoint publish, empty-payload TRV state poll, permit-join (f4, f16, f10)",
+          "result": "unverified"
+        },
+        {
+          "category": "connectivity",
+          "details": "Needs broker payloads and the screen; no peer exists here.",
+          "name": "TRV/air-sensor parsing, heating/off derivation, staleness greying (f15, f18, f7)",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "'dashboard up (4 rooms)' is logged, but painting and tap handling can only be seen on the real panel; product_testing's black-screen report is from an older build and still needs a re-run.",
+          "name": "Dashboard rendering, touch selection, +/- 0.5 °C, banners, dimming (f2, f3, f19, f13)",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "Strip is bound and app_logic sets it (OFF → ON across the Wi-Fi transition); colour remains a physical observation.",
+          "evidence": "I (1224) app_driver: Set status ('led_strip'): OFF / I (1674) app_driver: Set status ('led_strip'): ON",
+          "name": "Status LED colours (f6, f12)",
+          "result": "unverified"
+        },
+        {
+          "category": "voice",
+          "details": "Needs a microphone or button press. Vocabulary is 17 of 17 phrases — three variants per room plus kitchen, bedroom, 'warm up', 'cool down', cancel; the spec's own example 'set the office to 21' still has no phrase.",
+          "evidence": "I (984) heating_voice: 17 of 17 English phrases registered / Command 1600-1616 with no whole-number-21 variant",
+          "name": "Wake word / push-to-talk / spoken setpoints",
+          "result": "unverified"
+        },
+        {
+          "category": "commissioning",
+          "details": "AP comes up with its settings URL; joining from a real client is a user/hardware step.",
+          "name": "Onboarding through the SoftAP from a phone",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "The console factory_reset was exercised (NVS erased, reboot into the default room table and onboarding SoftAP) but the physical 10 s hold cannot be done here.",
+          "name": "Factory reset (10 s button hold)",
+          "result": "unverified"
+        }
+      ]
+    }
+  }
+}
