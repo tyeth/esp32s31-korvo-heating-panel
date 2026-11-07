@@ -1,0 +1,64 @@
+{
+  "agent": "code_writing",
+  "seq": 8,
+  "savedAt": "2026-11-07T15:24:24.076Z",
+  "report": {
+    "result": "pass",
+    "summary": "Fixed the three regressions from the review: the station is configured on the live radio after SoftAP commissioning, the front-button state can no longer latch into an unrequested factory reset, taps come from LVGL's own press/release events, and a front-button press now really opens the MultiNet window. Builds at 2.93 MB, 20 % free.",
+    "report": {
+      "decisions": [
+        "SoftAP/STA: the root cause was one boolean standing for two different facts, so it is now two flags (radio up, station configured). Any path that brings the radio up first leaves the station blank but configurable, and app_mqtt_set_wifi() always re-applies the STA config — on the live interface when the radio is already up — then connects.",
+        "Factory reset: the combination cannot be observed on this board (the button component reports the ADC group as ONE button; handles[1..3] never deliver events, and the review's latch was the symptom). Rather than fake a MODE state, the hold lives on the handle that does report: press starts the 10 s countdown, any release disarms, double click dismisses the banner. Nothing can latch because nothing stateful is set from an event that never arrives.",
+        "Touch: the review is right that LVGL drains the indev before timer callbacks, so the tap is now taken from LVGL's own LV_EVENT_PRESSED / LV_EVENT_RELEASED on the display object, which fire inside the indev read phase. Still one reader of the GT1151 (the framework's indev).",
+        "Voice: the button only raised the panel's own window; app_audio now exposes listen_once()/listen_stop() and its detect task opens the same MultiNet window the wake word opens, so one press is enough for one command (and a second press / the 10 s timer really closes the mic)."
+      ],
+      "filesCreated": [],
+      "filesModified": [
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/control.cpp",
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_logic/CMakeLists.txt",
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/components/app_audio/include/app_audio.h"
+      ],
+      "build": "esp32s31 success — 0x2cc110 (2933008 B) in a 0x380000 partition, 20% free; check_code clean on the 6 edited sources",
+      "findingsAddressed": [
+        {
+          "finding": "critical — SoftAP start latches s_wifi_started, station never configured after commissioning",
+          "fix": "s_wifi_started (radio) and s_sta_configured (credentials on WIFI_IF_STA) are separate; mqtt_wifi_start() configures the live interface when the radio is already up; app_mqtt_set_wifi() always (re)configures STA and connects"
+        },
+        {
+          "finding": "critical — factory-reset combo sticks mode_down and wipes the panel later",
+          "fix": "MODE events no longer consulted; the 10 s hold is timed from SET's press/release on the handle that is the event source, release always disarms"
+        },
+        {
+          "finding": "critical — touch taps never register (indev drained before timers)",
+          "fix": "tap taken from LVGL PRESSED/RELEASED event callbacks on the display"
+        },
+        {
+          "finding": "warning — dashboard bring-up on app_main can time out and there is no retry",
+          "fix": "unchanged design (display before web/mqtt/voice ordering is required for the button hook); a failed panel logs and the rest of boot continues — noted rather than re-architected"
+        },
+        {
+          "finding": "warning — AP timeout message names SET, recovery is BOOT long press",
+          "fix": "ap_stop() logs 'long-press BOOT to open it again', and the settings page names the access point"
+        },
+        {
+          "finding": "warning — button window never reaches MultiNet",
+          "fix": "app_audio_listen_once()/app_audio_listen_stop(); the detect task honours a button-opened window exactly like the wake word, and closes it on stop"
+        },
+        {
+          "finding": "info — heating_init() run twice at boot",
+          "fix": "app_logic_init() now only re-reads the saved targets (heating_load_targets())"
+        }
+      ],
+      "openQuestions": [
+        "SET+MODE cannot be distinguished on this hardware (the board's button component reports the ADC group as one button), so the factory reset is the 10 s hold of that front button — a deliberate, documented deviation from the spec's 'SET and MODE together'.",
+        "Whether the ES8389 capsule mic captures on I2S port 1 without an explicit RX codec channel remains unverified on hardware; if it does not, the wake word and the button window produce no audio."
+      ]
+    }
+  }
+}
