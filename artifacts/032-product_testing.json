@@ -1,0 +1,68 @@
+{
+  "agent": "product_testing",
+  "seq": 32,
+  "savedAt": "2026-11-07T17:30:26.229Z",
+  "report": {
+    "result": "fail",
+    "summary": "The board boot-loops: firmware aborts with \"assert failed\" right after the RGB panel is added to LVGL (LCD shows backlight only), so the dashboard, web UI, MQTT and console never come up.",
+    "report": {
+      "tests": [
+        {
+          "name": "Boot health — no panic / abort / watchdog reset",
+          "category": "boot",
+          "result": "fail",
+          "details": "Every boot of build 6d891b034 dies at the same point, immediately after the display panel line, with an 'assert failed' abort followed by a RISC-V register dump and a hardware-style restart (rst:0xc SW_CPU_RESET). The image never reaches app_main's start line, the web UI, MQTT or the console.",
+          "evidence": "I (2775) LVGL: Starting LVGL task / I (2795) app_display: Panel 'display_lcd' from board 'esp32_s31_korvo_1': generic_rgb rgb 800x480 / I (2795) LVGL: Stopped LVGL task / I (2835) a\nassert failed: 0x2f00c000 / MEPC 0x2f00bae4 RA 0x2f00ba9a MCAUSE 0x2 EXCEPTION / stack: 'assert failed: 0x2f00c000 0x00000000' / ELF file SHA256: 6d891b034 / Rebooting... (repeats)"
+        },
+        {
+          "name": "LCD shows the dashboard (four room cards)",
+          "category": "display",
+          "result": "fail",
+          "details": "User observation on the real panel: the backlight comes on but the screen stays black while the board reboots. The frame buffer is initialised (DEV_DISPLAY_LCD logged a successful RGB panel) but LVGL dies before drawing anything.",
+          "evidence": "User: 'screen displays black / shows backlight and reboots'"
+        },
+        {
+          "name": "LVGL display port and RGB panel registered",
+          "category": "display",
+          "result": "fail",
+          "details": "lvgl_port_add_disp_rgb() returns with the panel registered, but the LVGL port tears itself down seconds later. The 'Stopped LVGL task' line is emitted only from the esp_lvgl_port task loop after lvgl_port_ctx.running goes false, i.e. a second lvgl_port_init()/lvgl_port_deinit() ran while the task was already up. Source inspection points at the double bring-up that was believed fixed: app_main calls app_display_init(), and heating_ui_init() calls app_display_init() again (heating_ui.cpp:470). Each call starts a 'display_setup' task that does lvgl_port_init() → add_disp → add_touch; the second lvgl_port_init zeroes the context underneath the running task, which then deinits the mutex/event group/LVGL itself and the next lock/read faults — the same signature the functional run already saw as duplicated 'Display setup started' / panel / touch / 'Display initialized' lines but passed as 'harmless logging'.",
+          "evidence": "I (2775) LVGL: Starting LVGL task / I (2795) LVGL: Stopped LVGL task / assert failed: 0x2f00c000 / app_display.cpp:64 lvgl_port_init(&port_cfg); heating_ui.cpp:470-471 esp_err_t err = app_display_init(); / esp_lvgl_port.c:216-256 task loop + 'Stopped LVGL task'"
+        },
+        {
+          "name": "Boot reaches the application banner / console",
+          "category": "boot",
+          "result": "fail",
+          "details": "No 'app_console: Console ready' or 'app_main: ZeroCode AI firmware started' line ever appears; my 'uptime' console commands get no reply and no device-hardware log stream was produced for this session (checks could therefore only rely on the pasted boot log).",
+          "evidence": "past boot log ends in the abort before app_display/app_webui/app_mqtt/app_console init; send_device_command 'uptime' → no reply landed"
+        },
+        {
+          "name": "Status LED strip colours (white connecting → green online)",
+          "category": "led",
+          "result": "unverified",
+          "details": "The strip driver binds, but the board never stays up long enough to reach Wi-Fi/broker state, so no colour progression exists to observe."
+        },
+        {
+          "name": "Touch selection / -/+ setpoint, and voice push-to-talk",
+          "category": "touch",
+          "result": "unverified",
+          "details": "Both need the dashboard that never gets drawn or the voice path that boots but is abandoned at boot; blocked by the abort."
+        },
+        {
+          "name": "MQTT setpoint publish, TRV parsing, permit-join",
+          "category": "connectivity",
+          "result": "unverified",
+          "details": "Blocked: app_mqtt_init is never reached on this build."
+        }
+      ],
+      "deviceInfo": {
+        "chip": "ESP32-S31 rev v0.0, 2 cores, 16 MB flash, 16 MB PSRAM",
+        "board": "esp32-s31-korvo-1",
+        "bootTime": "aborts ~2.8 s after reset, before app_main completes; repeats",
+        "connectivity": "never reached (no Wi-Fi/MQTT init)",
+        "firmware": "zerocode_ai_firmware 1.0.0, ESP-IDF e9da155a, ELF SHA256 6d891b034"
+      },
+      "suggestedFix": "Remove the second display bring-up: heating_ui_init() must not call app_display_init() again — it should only wait for the display_setup task's panel + touch registration (e.g. poll for the display handle / an 'app_display ready' flag) and then build the screen. Alternatively make app_display_init() idempotent (single task, no second lvgl_port_init) and log the duplicate call. After the fix the boot must show exactly one 'display_setup' pass and no second 'LVGL: Starting LVGL task' / 'Stopped LVGL task', no 'assert failed', and the dashboard must actually paint on the 800x480 RGB panel.",
+      "notes": "Diagnosed from the boot log the user pasted; the live device-hardware log stream was not available for this session, so the console/uptime checks could not be re-run."
+    }
+  }
+}
