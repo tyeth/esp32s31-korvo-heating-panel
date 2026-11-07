@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:34:31.526Z",
+  "updatedAt": "2026-11-07T14:37:49.567Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -16,7 +16,13 @@
     "features": [
       {
         "id": "f1",
-        "text": "Voice control — wake word \"Hi ESP\", spoken commands in English (on-board ES8389 mic and speaker)",
+        "text": "Voice control — mic opens ONLY for one request when a front button is pressed (or the on-screen mic icon), listens ~10 s and closes again; no always-listening wake word, no spoken replies",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f9",
+        "text": "Spoken commands set a room's target: \"set the office to 21\", \"living room twenty one and a half\", \"hallway plus one\", \"cancel\"",
         "status": "draft",
         "source": "ai"
       },
@@ -34,13 +40,19 @@
       },
       {
         "id": "f4",
-        "text": "Home Assistant integration over MQTT with auto-discovery — each room's thermostat is a climate entity; setpoint changes are forwarded by HA to that room's Zigbee TRV (zigbee2mqtt)",
+        "text": "Setpoints are published straight to the zigbee2mqtt TRV setpoint topics over MQTT (no Home Assistant automations involved); one fixed topic per room, configurable on the web page",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f10",
+        "text": "Permit-join button — one tap publishes the zigbee2mqtt coordinator's permit_join request to pair a new TRV",
         "status": "draft",
         "source": "ai"
       },
       {
         "id": "f7",
-        "text": "Room temperature comes from Home Assistant room air sensors (never from the device itself)",
+        "text": "Current room temperatures are read from the room air sensors' zigbee2mqtt topics (the device has no thermometer of its own)",
         "status": "draft",
         "source": "ai"
       },
@@ -52,7 +64,7 @@
       },
       {
         "id": "f5",
-        "text": "Local web page — SoftAP + mDNS onboarding, Wi-Fi/settings page served by the device",
+        "text": "Local web page — SoftAP + mDNS onboarding, plus a settings page for the MQTT broker and the per-room TRV / air-sensor topics",
         "status": "draft",
         "source": "ai"
       },
