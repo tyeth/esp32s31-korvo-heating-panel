@@ -1,10 +1,10 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:43:53.664Z",
+  "updatedAt": "2026-11-07T14:45:13.548Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
-      "description": "Voice-controlled wall dashboard for a Home Assistant setup that controls the TRV radiator valves of each room",
+      "description": "Voice- and touch-controlled room thermostat panel for a Home Assistant / zigbee2mqtt heating setup with four smart TRVs",
       "chip": "esp32s31",
       "frameworks": [
         "audio",
@@ -34,31 +34,13 @@
       },
       {
         "id": "f2",
-        "text": "Room thermostat dashboard — on-board RGB LCD shows the 4 rooms with current temperature (from the air sensors) and target (from each TRV's reported state)",
+        "text": "Room thermostat dashboard — on-board RGB LCD shows the 4 rooms with current temperature (from the air sensors) and target (reported by each TRV)",
         "status": "draft",
         "source": "ai"
       },
       {
         "id": "f3",
-        "text": "Touch control — GT1151 touch panel selects a room and raises/lowers its target temperature, step 0.5 °C within the TRV's allowed range",
-        "status": "draft",
-        "source": "ai"
-      },
-      {
-        "id": "f4",
-        "text": "Setpoints are published straight to the zigbee2mqtt TRV setpoint topics over MQTT (no Home Assistant automations involved); one fixed topic per room, configurable on the web page",
-        "status": "draft",
-        "source": "ai"
-      },
-      {
-        "id": "f10",
-        "text": "Permit-join button — one tap publishes {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join to pair a new TRV",
-        "status": "draft",
-        "source": "ai"
-      },
-      {
-        "id": "f7",
-        "text": "Current room temperatures are read from the room air sensors' zigbee2mqtt topics (the device has no thermometer of its own)",
+        "text": "Touch control — GT1151 touch panel selects a room and raises/lowers its target, step 0.5 °C between 5 and 30 °C",
         "status": "draft",
         "source": "ai"
       },
@@ -69,8 +51,50 @@
         "source": "ai"
       },
       {
+        "id": "f4",
+        "text": "Setpoints are published straight to each TRV's zigbee2mqtt MQTT topic — no Home Assistant automations involved; one fixed topic per room, editable on the web page",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f16",
+        "text": "Setpoint command is {\"current_heating_setpoint\": \"19.5\"} on that TRV's own state topic; the device never sends a mode change, so the valves keep their current heating state",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f15",
+        "text": "Reads each TRV's single zigbee2mqtt state topic (0xa4c1383b5b3d7063, 0xa4c13852a667eedf, 0xa4c13829e3ee602b, 0xa4c13829aa5a7009) and picks current_heating_setpoint, local_temperature and the mode out of the one JSON payload; the room air-sensor topics are set on the web page",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f18",
+        "text": "A TRV counts as heating unless its payload says system_mode=off (missing mode or a bare heating_cooling_mode:heat also counts as heating) — today all four read as heating",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f7",
+        "text": "Current room temperatures come from the room air sensors' zigbee2mqtt topics (the device has no thermometer of its own)",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f19",
+        "text": "One active room at a time: tap a room card to select it, then − / + adjust its target; a background room never changes by accident",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f10",
+        "text": "Permit-join button — one tap publishes {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join to pair a new TRV",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
         "id": "f5",
-        "text": "Local web page — SoftAP + mDNS onboarding, plus a settings page for the MQTT broker and the per-room TRV / air-sensor topics",
+        "text": "Local web page — SoftAP + mDNS onboarding, plus a settings page for the MQTT broker and each room's TRV / air-sensor topic and display name",
         "status": "draft",
         "source": "ai"
       },
@@ -93,26 +117,14 @@
         "source": "ai"
       },
       {
-        "id": "f14",
-        "text": "TRVs stay in heat mode at optimistic setpoints (the boiler is not remote-controlled yet); the device works at that level and never claims to control the boiler",
-        "status": "draft",
-        "source": "ai"
-      },
-      {
-        "id": "f15",
-        "text": "Reads each TRV's single zigbee2mqtt state topic (zigbee2mqtt/0xa4c1383b5b3d7063, …52a667eedf, …29e3ee602b, …29aa5a7009) and picks the fields current_heating_setpoint, local_temperature and the mode field out of the one JSON payload; the room air sensor topic is set on the web page",
-        "status": "draft",
-        "source": "ai"
-      },
-      {
-        "id": "f16",
-        "text": "If a TRV reports running_state=off (frost mode) the room shows \"valve off\" and the next setpoint command also turns it back to heat — setpoint is sent as {\"current_heating_setpoint\": \"19.5\"} on the TRV's state topic, mode via {\"system_mode\": \"heat\"}",
-        "status": "draft",
-        "source": "ai"
-      },
-      {
         "id": "f17",
-        "text": "Anti-mistake guard — a spoken or touched target is only published when it differs from the last one sent; a repeat of the same command within 30 s is ignored and the screen says \"already set\"",
+        "text": "Anti-mistake guard — a target is only published when it differs from the last one sent; the same command twice within 30 s is ignored and the screen says \"already set\"",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f14",
+        "text": "The boiler is not remote-controlled yet; the device only moves TRV setpoints and never claims to switch the heating on or off",
         "status": "draft",
         "source": "ai"
       }
