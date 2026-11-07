@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:32:59.083Z",
+  "updatedAt": "2026-11-07T14:34:08.565Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -41,6 +41,12 @@
       {
         "id": "f7",
         "text": "Room temperature comes from Home Assistant room air sensors (never from the device itself)",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f8",
+        "text": "Shows only the smart-heated rooms (4 of the 6 rooms in the house: which ones is for the user to confirm)",
         "status": "draft",
         "source": "ai"
       },
