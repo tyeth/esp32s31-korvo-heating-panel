@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:45:13.548Z",
+  "updatedAt": "2026-11-07T14:49:44.778Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -128,6 +128,169 @@
         "status": "draft",
         "source": "ai"
       }
-    ]
+    ],
+    "details": {
+      "deviceType": "A wall-mounted heating panel for a Home Assistant house whose radiators carry four Zigbee TRVs managed through zigbee2mqtt. It replaces app-fiddling and voice-assistant round trips: one always-on screen shows the four heated rooms with their current and target temperatures, and the user changes a target either by tapping the touchscreen or by pressing a front button and saying one sentence. The device publishes the new setpoint value directly onto the TRV's own zigbee2mqtt MQTT topic — no Home Assistant automation is required. It does not control the boiler.",
+      "hardware": {
+        "chip": "esp32s31",
+        "board": "esp32-s31-korvo-1",
+        "gpios": {
+          "note": "No external wiring at all — every peripheral used is already on the Korvo-1 board. Pin assignments come from the board definition: RGB LCD 40/43/44/45, GT1151 touch on the I2C bus (GPIO0/GPIO1), ES8389 codec 3/4/5/6/7, WS2812 LED strip GPIO37, boot button GPIO61, ADC front-button group (SET / MODE / VOL+ / VOL−) on the board's ADC button input, microSD 20–25."
+        },
+        "peripherals": [
+          {
+            "part": "ESP32-S31-Korvo-1 on-board RGB LCD",
+            "use": "dashboard + settings UI (display framework)"
+          },
+          {
+            "part": "GT1151 capacitive touch panel",
+            "use": "room selection and −/+ setpoint buttons"
+          },
+          {
+            "part": "ES8389 audio codec (mic in, speaker out)",
+            "use": "microphone capture for one-shot voice commands; speaker unused (no spoken replies)"
+          },
+          {
+            "part": "WS2812 LED strip",
+            "use": "status indicator"
+          },
+          {
+            "part": "Front button set (SET / MODE / VOL+ / VOL−) plus boot button",
+            "use": "push-to-talk trigger and permit-join trigger"
+          },
+          {
+            "part": "4× Zigbee radiator TRVs via zigbee2mqtt",
+            "use": "actuators reached over MQTT only, not wired"
+          },
+          {
+            "part": "Room air sensors via zigbee2mqtt",
+            "use": "source of current room temperatures, read over MQTT"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "kind": "push-to-talk button",
+          "label": "Front button (SET)",
+          "hardware": "on-board ADC button group",
+          "behavior": "Opens a single listening window: mic records, the screen shows 'Listening…' with a shrinking 10 s bar, LED goes amber. The window closes on end of speech, a second press, or after 10 s. A recognised command applies immediately; anything unrecognised shows 'Sorry, not understood' for 3 s."
+        },
+        {
+          "kind": "wake word",
+          "label": "\"Hi ESP\" (fallback)",
+          "hardware": "ES8389 mic, audio framework wake word",
+          "behavior": "Saying the wake word opens exactly the same one-request window as the button, so people further from the panel can use it. Nothing is streamed or stored before the wake word or button press."
+        },
+        {
+          "kind": "touch",
+          "label": "Room cards, − / + / mic / permit-join controls",
+          "hardware": "GT1151 capacitive panel",
+          "behavior": "Tap a room card to select it (border highlights; only the selected room's − and + are live). − / + change that room's target by 0.5 °C within 5–30 °C and publish immediately. The on-screen mic icon is equivalent to the push-to-talk button; the permit-join icon is equivalent to the permit-join button."
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "display",
+          "label": "Room dashboard",
+          "hardware": "on-board RGB LCD (display framework)",
+          "behavior": "Four room cards in a 2×2 grid: room name, current temperature (air sensor, large), target temperature (TRV-reported setpoint), and a small 'heat'/'off' tag. Values that have not updated within 10 minutes are shown greyed with the time they were last seen. A footer line carries the MQTT link state and the current time."
+        },
+        {
+          "kind": "display",
+          "label": "Feedback overlays",
+          "hardware": "on-board RGB LCD",
+          "behavior": "Transient banners: 'Listening…', 'Office → 21.0 °C', 'Already set', 'Sorry, not understood', 'Offline — controls disabled', 'Permit join for 4 minutes sent'."
+        },
+        {
+          "kind": "indicator",
+          "label": "Status LED strip",
+          "hardware": "WS2812 strip on GPIO37",
+          "behavior": "Dim white breathing = connecting (Wi-Fi/MQTT); solid green = online and MQTT connected; solid amber = listening; flashing red for 1 s = command rejected / offline; off (dim) when idle at night. Brightness is kept low so it works on a nightstand as well as on a wall."
+        },
+        {
+          "kind": "actuator",
+          "label": "TRV setpoint",
+          "hardware": "4× Zigbee TRVs via MQTT",
+          "behavior": "A new target is published as {\"current_heating_setpoint\": \"21\"} (string value, one decimal) to that TRV's state topic, which zigbee2mqtt translates into a Zigbee setpoint write. The screen then follows the TRV's own reported value in the next state message — it never shows a fabricated success."
+        }
+      ],
+      "connectivity": [
+        {
+          "stack": "MQTT",
+          "transport": "Wi-Fi",
+          "purpose": "zigbee2mqtt bridge topics: per-TRV state subscription and setpoint publish, bridge/request/permit_join"
+        },
+        {
+          "stack": "Web UI",
+          "transport": "Wi-Fi",
+          "purpose": "SoftAP + mDNS onboarding and the settings page"
+        },
+        {
+          "stack": "Audio",
+          "transport": "on-device",
+          "purpose": "offline wake word + one-shot command recognition (English), no cloud call"
+        }
+      ],
+      "commissioning": {
+        "method": "softap + mDNS (web UI framework), then the settings page",
+        "payload": "Wi-Fi SSID/password; MQTT broker URI with optional username/password; per-room TRV topic, air-sensor topic and display name",
+        "instructions": "1. Power the Korvo board over USB-C; the LED strip breathes white and the screen shows the setup hint with the access-point name. 2. Join the device's SoftAP from a phone/laptop and open http://korvo-heating.local (or the address shown on screen). 3. Pick your home Wi-Fi and enter the password. 4. Enter the MQTT broker address (e.g. mqtt://192.168.1.10:1883) plus credentials if the broker needs them. 5. On the settings page the four rooms are pre-filled with the owner's TRV topics: bathroom → zigbee2mqtt/0xa4c1383b5b3d7063, hallway → zigbee2mqtt/0xa4c13852a667eedf, office → zigbee2mqtt/0xa4c13829e3ee602b, living room → zigbee2mqtt/0xa4c13829aa5a7009; enter each room's air-sensor topic and adjust the names if needed. 6. Save: the device reboots, connects, and the screen fills with live values within a few seconds (the LED turns green)."
+      },
+      "businessLogic": {
+        "powerOnBehavior": "Dashboard immediately with the last saved setpoints from flash (greyed until the first MQTT state messages arrive); no splash screen and no setup wizard on the touch panel — onboarding lives on the web page. LED breathes white until Wi-Fi and the broker are up, then steady green.",
+        "automationRules": [
+          "Room state is derived from the TRV's single state payload: current target = current_heating_setpoint, current temperature = local_temperature, mode = system_mode (any other value, or a missing mode, means heating), and the air sensor's temperature overrides local_temperature for the displayed current temperature when the sensor has reported within 10 minutes.",
+          "Target changes come only from the user: touch −/+, or one voice command. Nothing is scheduled, and no Home Assistant automation is expected.",
+          "A publish is skipped when the new target equals the value last published within the previous 30 s; the screen says 'Already set' instead.",
+          "Values older than 10 minutes are greyed and stamped with their last-seen time (zigbee2mqtt has availability/last_seen disabled in this household, so the device does its own staleness check).",
+          "Optional permit-join: tapping the permit-join button publishes {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join and shows a confirmation banner; nothing else about the Zigbee network is exposed."
+        ],
+        "dayToDayOperation": "Glance at the four cards; tap a room with cold storage or an over-warm working day; nudge its target up or down 0.5 °C at a time; or press the front button and say 'set the office to 21'. The card updates as soon as the TRV reports back. The boiler is not controlled by the device, so setting a target simply moves the valve — the house's actual heat stays a manual matter."
+      },
+      "factoryReset": {
+        "trigger": "Hold the front SET and MODE buttons together for 10 s (the screen counts down and the LED turns solid red before it happens).",
+        "effect": "Clears Wi-Fi credentials, broker settings and the room/topic table, restores the four default room names and TRV topics and the default zone, then reboots into SoftAP onboarding. TRV setpoints themselves are untouched."
+      },
+      "failureModes": [
+        {
+          "scenario": "Wi-Fi down or broker unreachable at boot",
+          "behavior": "Dashboard shows the last saved targets greyed with 'Offline — controls disabled' in the footer; LED breathes white then flashing red; reconnect attempts back off to every 30 s."
+        },
+        {
+          "scenario": "Broker drops while running",
+          "behavior": "Values freeze and grey out, footer says 'Offline', LED flashes red. Taps and voice commands are refused (not queued) and the screen says 'Offline — controls disabled'."
+        },
+        {
+          "scenario": "A single TRV stops reporting (battery, out of range)",
+          "behavior": "Only that room's card greys out with its last-seen time after 10 minutes; the other rooms keep working; no alarm sound."
+        },
+        {
+          "scenario": "Voice command not understood",
+          "behavior": "3 s 'Sorry, not understood' banner, LED returns to green; nothing is published."
+        },
+        {
+          "scenario": "Voice command names a room with no TRV (kitchen, bedroom)",
+          "behavior": "Screen answers 'Kitchen has no smart TRV' and nothing is published."
+        },
+        {
+          "scenario": "Power blip",
+          "behavior": "Comes back on the last saved targets; any command not yet acknowledged by a TRV state message is simply not shown as applied."
+        }
+      ],
+      "powerManagement": {
+        "batteryPowered": false,
+        "sleepMode": "The panel is mains/USB powered and stays awake; the LCD dims to a low brightness after 2 minutes without touch, voice or MQTT change, and the LED strip goes dim; a touch or button press restores full brightness.",
+        "wakeSources": [
+          "touch panel",
+          "front button",
+          "wake word",
+          "MQTT message"
+        ]
+      },
+      "timezone": {
+        "iana": "Europe/London"
+      },
+      "customBehavior": "The device deliberately has no Home Assistant integration beyond plain zigbee2mqtt topics: it writes setpoints into the TRV state topics directly, which is enough for this house and avoids depending on automations. Room→topic mapping, including the four real TRV topics, is data on the settings page rather than firmware constants, so re-pairing a valve only means editing a topic. Timezone Europe/London is assumed from the household's Zigbee topic style and the boiler setup — the device only uses it for the clock in the dashboard footer."
+    }
   }
 }
