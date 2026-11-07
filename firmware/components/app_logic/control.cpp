@@ -117,11 +117,8 @@ static void zc_set_btn_init(void)
  * handles ARE button_handle_t), so these are ordinary iot_button callbacks on
  * a device somebody else created.
  *
- * The single click belongs to the product's push-to-talk only: the block's
- * built-in default (which toggles a driver param) prints "no handler" when no
- * target is bound, so it is not registered from the generated block here
- * (bind callbacks removed; the product's push-to-talk / permit-join hooks are
- * what run). */
+ * The single click is the product's push-to-talk: this hook is deliberately
+ * overridden in app_logic.cpp, which is what actually runs. */
 __attribute__((weak)) void boot_btn_on_single_click(void)
 {
 #ifndef BOOT_BTN_SINGLE_CLICK_TOGGLES

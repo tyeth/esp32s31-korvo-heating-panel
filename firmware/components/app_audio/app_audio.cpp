@@ -134,8 +134,8 @@ static void audio_feed_task(void *arg)
 
 /* The one-shot window opened by the front button: the same window the wake
  * word opens, without waiting for the wake word. A press requests it; a
- * second press (or the panel's 10 s timer) requests it closed. Both are one
- * flag the detect task honours, whichever state it is in. */
+ * second press (or the panel's own timer) requests it closed. Both are one
+ * flag the detect task honours whichever state it is in. */
 static volatile bool s_btn_window = false;   /* a press wants the mic open */
 
 void app_audio_listen_once(void)
@@ -156,33 +156,21 @@ static void audio_detect_task(void *arg)
      * spec's push-to-talk trigger. Either way the window is one request long,
      * which is what keeps idle CPU down. */
     bool listening = false;
-    bool btn_window = false;      /* the current window was opened by a press */
 
     while (1) {
         afe_fetch_result_t *res = s_afe->fetch(s_afe_data);
         if (!res || res->ret_value == ESP_FAIL) continue;
 
-        if (s_btn_window) {
-            if (!listening) {
-                listening = true;
-                btn_window = true;
-                s_mn->clean(s_mn_data);
-                ESP_LOGI(TAG, "button press — listening for a command");
-                audio_on_event(1);
-                continue;
-            }
-        } else if (listening && btn_window) {
-            /* The press was taken back (a second press, or the 10 s timer). */
-            listening = false;
-            btn_window = false;
-            ESP_LOGI(TAG, "listening window closed");
-            audio_on_event(0);
+        if (s_btn_window && !listening) {
+            listening = true;
+            s_mn->clean(s_mn_data);
+            ESP_LOGI(TAG, "button press — listening for a command");
+            audio_on_event(1);
             continue;
         }
 
         if (!listening && res->wakeup_state == WAKENET_DETECTED) {
             listening = true;
-            btn_window = false;
             s_mn->clean(s_mn_data);
             ESP_LOGI(TAG, "wake word detected — listening for a command");
             audio_on_event(1);
@@ -198,10 +186,14 @@ static void audio_detect_task(void *arg)
             esp_mn_results_t *mn = s_mn->get_results(s_mn_data);
             if (mn && mn->num > 0) {
                 ESP_LOGI(TAG, "command phrase %d", mn->phrase_id[0]);
+                /* One press, one request: the window is over as soon as the
+                 * phrase is in, whatever opened it. */
+                s_btn_window = false;
                 audio_apply_command(mn->phrase_id[0]);
             }
         } else if (st == ESP_MN_STATE_TIMEOUT) {
             ESP_LOGI(TAG, "no command heard — sleeping until next trigger");
+            s_btn_window = false;
             heating_voice_not_understood();
         }
         listening = false;

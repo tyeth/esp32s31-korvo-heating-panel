@@ -226,15 +226,24 @@ static void factory_reset_cb(void *arg)
 static void on_set_double_click(void *arg, void *usr_data);
 static void alert_silence(void);
 
-/* The hold: SET pressed starts the countdown, and only an actual release
- * cancels it. Ten seconds of hold wipes the settings and reboots the panel
- * into onboarding — the spec's factory reset, on the one front button the
+/* The hold: nothing is armed by a press. The countdown starts only once the
+ * button has actually been HELD for ARM_MS (a long-press event), and a real
+ * release cancels it — a tap, a slipped finger or a lost release can never
+ * schedule a wipe. Ten seconds of hold wipes the settings and reboots the
+ * panel into onboarding: the spec's factory reset, on the one front button the
  * board's button device reports. */
 static void on_set_press(void *arg, void *usr_data)
 {
     (void)arg; (void)usr_data;
     heating_ui_touch_activity();
     s_combo.set_down = true;
+}
+
+static void on_set_arm(void *arg, void *usr_data)
+{
+    (void)arg; (void)usr_data;
+    if (!s_combo.set_down) return;
+    /* Held, not tapped: the countdown starts here and only here. */
     heating_ui_banner("Reset in 10 s — release to cancel");
     if (s_fr_timer) {
         esp_timer_stop(s_fr_timer);
@@ -254,14 +263,6 @@ static void on_set_double_click(void *arg, void *usr_data)
 {
     (void)arg; (void)usr_data;
     alert_silence();
-}
-
-/* The hold that ran to completion. */
-static void on_set_long_hold(void *arg, void *usr_data)
-{
-    (void)arg; (void)usr_data;
-    if (!s_combo.set_down) return;
-    factory_reset_cb(NULL);
 }
 
 /* Dismiss a banner or a running window that is only feedback; never opens the
@@ -342,10 +343,10 @@ void boot_btn_on_long_press(void)
  * front panel is driven entirely through that handle:
  *
  *   click        push-to-talk (spec's front SET button)
- *   long press   SET — the combination's first half: with MODE also down the
- *                countdown below arms
- *   double click SET — the unmodified long hold, without MODE
- *   long hold    SET+MODE for ten seconds: factory reset
+ *   double click dismiss the banner
+ *   hold         SET kept down for ARM_MS (a long-press event) starts the
+ *                countdown, and ten seconds of hold total performs the reset
+ *                — a tap can never schedule one
  *
  * MODE's own events are never consulted (no release could clear a state they
  * set, which is exactly how a factory reset once armed itself). */
@@ -368,13 +369,14 @@ static void bind_adc_buttons(void)
     iot_button_register_cb(s_combo.set, BUTTON_DOUBLE_CLICK, NULL, on_set_double_click, NULL);
 
     /* The one hold that means anything: SET held for ten seconds. The press
-     * and release bracket it (any release disarms), and the arm point is the
-     * elapsed-time event, not a second threshold. */
+     * and release bracket it (any release disarms); the countdown is armed by
+     * the long-press event at ARM_MS, and the wipe is performed by that timer —
+     * not by the event, so the two can never disagree. */
     iot_button_register_cb(s_combo.set, BUTTON_PRESS_DOWN, NULL, on_set_press, NULL);
     iot_button_register_cb(s_combo.set, BUTTON_PRESS_UP, NULL, on_set_release, NULL);
     button_event_args_t lp = {};
-    lp.long_press.press_time = FR_HOLD_MS;
-    iot_button_register_cb(s_combo.set, BUTTON_LONG_PRESS_UP, &lp, on_set_long_hold, NULL);
+    lp.long_press.press_time = COMBO_ARM_MS;
+    iot_button_register_cb(s_combo.set, BUTTON_LONG_PRESS_START, &lp, on_set_arm, NULL);
 
     ESP_LOGI(TAG, "front buttons bound (%d) — click = push-to-talk, double click = dismiss, "
                   "hold %d ms = factory reset", (int)btns->num_buttons, FR_HOLD_MS);
