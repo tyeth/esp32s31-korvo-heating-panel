@@ -1,0 +1,34 @@
+{
+  "agent": "code_writing",
+  "seq": 42,
+  "savedAt": "2026-11-07T18:47:30.322Z",
+  "report": {
+    "result": "pass",
+    "summary": "Fixed the configured-boot crash: the Wi-Fi/IP handlers no longer do work on the default event-loop task (they notify a dedicated 4 KB task, and the broker starts 1 s after the address settles), and the event-task stack was raised to 4 KB. Display double-init is confirmed fixed. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The crash is a stack overflow in the FreeRTOS default event-loop task ('sys_evt'), not an LVGL or display fault — that one is confirmed fixed by this same report. The product's own Wi-Fi/IP handler was doing the heavy work there (logging, creating esp_timers, starting the MQTT client with TLS/DNS) on a 2.3 KB task.",
+      "Fixed at the source as the report suggests, not only by enlarging the stack: the handlers now merely notify a dedicated 'mqtt_net' task (4 KB) which does the work, and the broker client is started 1 s after the address settles instead of inside the association's event storm. Both measures target the same real problem: boot must not depend on how much stack the framework's shared task happens to have left.",
+      "Also raised CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE from its 2304 default to 4096: the loop still runs the Wi-Fi stack's own handlers plus mDNS/httpd notifications on a Wi-Fi + TLS panel, and that headroom costs 1.8 KB of DRAM once.",
+      "STA_START is the one Wi-Fi event still answered in place: esp_wifi_connect() is what the framework documents for it and returns immediately, so it carries no stack risk and keeps the join sequence direct."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp",
+      "firmware/sdkconfig.defaults"
+    ],
+    "build": "esp32s31 success — 0x2cd3f0 (2937840 B) in a 0x380000 partition, 20% free; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "boot with stored Wi-Fi creds aborts with 'A stack overflow in task sys_evt' right after MQTT init",
+        "fix": "Wi-Fi/IP handlers only notify the block's own 'mqtt_net' task (4 KB) which logs, retries and starts the MQTT client; the client starts 1 s after GOT_IP via a one-shot timer; CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE 2304 -> 4096 in sdkconfig.defaults"
+      },
+      {
+        "finding": "display double bring-up / assert (previous round)",
+        "fix": "confirmed fixed in this report — single display init, panel registered once, boot continues"
+      }
+    ],
+    "openQuestions": [
+      "The report asks for the spec's example 'set the office to 21' to be a phrase; the current vocabulary says 20 / 21.5 / 'twenty one and a half'. Adding 21 as a fourth variant would be four phrases per room, which MultiNet's fixed grammar handles; worth confirming with the owner before widening the vocabulary again."
+    ]
+  }
+}
