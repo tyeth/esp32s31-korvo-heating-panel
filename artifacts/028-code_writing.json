@@ -1,0 +1,34 @@
+{
+  "agent": "code_writing",
+  "seq": 28,
+  "savedAt": "2026-11-07T16:57:57.996Z",
+  "report": {
+    "result": "pass",
+    "summary": "Display init no longer aborts: the board's RGB panel is brought up through lvgl_port_add_disp_rgb() instead of the panel-IO-based generic call, so boot can continue past the dashboard to web, MQTT and the console. Builds clean on the current tree at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The functional failure is a genuine new abort, not a repeat: display init handed the board's RGB panel to lvgl_port_add_disp(), which asserts io_handle != NULL — an RGB panel has no panel IO. Fixed at the call site by branching on the board panel's sub_type: rgb / rgb_3wire_spi go to lvgl_port_add_disp_rgb() (bb_mode and avoid_tearing off: the panel owns its frame buffer), serial panels keep the generic call. The panel log now names the sub-type and whether LVGL registered it, so the next run shows immediately which path was taken.",
+      "Did not retry the earlier diagnosis: the esp-dsp fault is confirmed fixed by the functional report, so no audio change was needed — the display abort was simply masked behind it.",
+      "app_audio_init() is called once (app_main); the duplicate 'Display setup started' lines the tester saw came from an earlier revision's two-task display bring-up, and app_main now documents the single path."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_display/app_display.cpp",
+      "firmware/main/app_main.cpp"
+    ],
+    "build": "esp32s31 success on the current tree — 0x2cc900 (2935040 B) in a 0x380000 partition, 20% free; check_code clean on app_display.cpp",
+    "findingsAddressed": [
+      {
+        "finding": "fail — boot aborts at lvgl_port_add_disp (assert io_handle != NULL) for the board's RGB panel; nothing after display init runs",
+        "fix": "app_display branches on the board panel sub_type and uses lvgl_port_add_disp_rgb(&disp_cfg, &rgb_cfg) for RGB (and RGB+3-wire SPI) panels, generic lvgl_port_add_disp() otherwise"
+      },
+      {
+        "finding": "info — 'Display setup started' appears twice in the boot log",
+        "fix": "the single app_display_init()/heating_ui_init() path is documented at the call site (the duplicate came from the old two-task bring-up, not a current double call)"
+      }
+    ],
+    "openQuestions": [
+      "Whether the RGB panel's buffer sizing (800x480, 40-line double buffer, no bounce buffer) suits the board in practice is a hardware observation; the emulator only shows the add call is now the right one.",
+      "The remaining esp-dsp kernels (FFT, FIR, biquad) would only surface in a later functional run if they fault the same way the dot product did."
+    ]
+  }
+}
