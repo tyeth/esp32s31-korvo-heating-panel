@@ -1,0 +1,39 @@
+{
+  "agent": "code_writing",
+  "seq": 21,
+  "savedAt": "2026-11-07T16:15:03.262Z",
+  "report": {
+    "result": "pass",
+    "summary": "Fixed the boot-blocking crash: the voice front end's dot product now runs on esp-dsp's generic C kernel (new app_dsp_shim component linked ahead of esp-dsp), so audio init completes and the dashboard, settings page, MQTT and console are reachable; the pinned broker CA is also persisted and clearable. Builds at 2.93 MB, 20 % free.",
+    "decisions": [
+      "The functional failure was a real boot abort in esp-dsp's RISC-V assembly reached from esp-sr's prebuilt front end. The report's suggested Kconfig path (CONFIG_DSP_ANSI) was tried first and is wrong for this tree: esp-sr's c_speech_features is a prebuilt archive that calls dsps_dotprod_f32_arp4 by name, so ANSI mode makes it an undefined reference (verified by the failing link).",
+      "Root cause therefore: the symbol is baked into a prebuilt library while its only optimized implementation faults on this target. Fix at that boundary — a small component (app_dsp_shim) that defines the same symbol with esp-dsp's ANSI implementation, ordered before esp-dsp so the linker never reaches the assembly member. One kernel replaced, everything else in esp-dsp keeps its optimized code.",
+      "Also folded in the review's non-blocking note: the pinned broker CA is now persisted in NVS and can be cleared with a lone '-', so it survives reboots and cannot get stuck."
+    ],
+    "filesCreated": [
+      "firmware/components/app_dsp_shim/dsps_dotprod_arp4.c",
+      "firmware/components/app_dsp_shim/CMakeLists.txt"
+    ],
+    "filesModified": [
+      "firmware/components/app_audio/CMakeLists.txt",
+      "firmware/components/app_mqtt/app_mqtt.cpp",
+      "firmware/components/app_logic/heating_web.cpp",
+      "firmware/sdkconfig.defaults"
+    ],
+    "build": "esp32s31 success — 0x2cc6e0 (2934496 B) in a 0x380000 partition, 20% free; check_code clean on the 3 edited sources",
+    "findingsAddressed": [
+      {
+        "finding": "fail — boot aborts with illegal/misaligned instruction in dsps_dotprod_f32_arp4 (esp-dsp) during wake-word feature extraction, so nothing after app_audio_init runs",
+        "fix": "generic C dsps_dotprod_f32_arp4 in the new app_dsp_shim component, linked ahead of esp-dsp (CONFIG_DSP_ANSI tried first and rejected: the prebuilt esp-sr archive requires the symbol)"
+      },
+      {
+        "finding": "warning — pinned CA not persisted, cannot be cleared from the page",
+        "fix": "CA stored in NVS 'ca' and restored by mqtt_load_config(); a lone '-' in the settings field clears it (erases the key, falls back to the built-in pack); CA-only edits rebuild the session"
+      }
+    ],
+    "openQuestions": [
+      "Whether esp-dsp's other hardware-loop kernels (FFT, FIR, biquad, matrix) also fault on this target is untested here; the wake-word path only needed the dot product, and an FFT fault would show up in the next functional run if it exists.",
+      "The same class of fault may be an emulator gap rather than silicon; the shim is safe on both (identical arithmetic), so it is not reverted."
+    ]
+  }
+}
