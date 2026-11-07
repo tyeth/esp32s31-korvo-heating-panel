@@ -1,0 +1,8 @@
+# Deliberately empty: app_mdnscfg exists only so the component manager evaluates
+# the mDNS component's Kconfig, which lets sdkconfig.product set
+# CONFIG_MDNS_TASK_STACK_SIZE. It declares the dependency for that reason only —
+# putting it here rather than in main, whose idf_component.yml the generator
+# owns. No product code lives here.
+idf_component.yml:
+  dependencies:
+    espressif/mdns: ~1.11.3
