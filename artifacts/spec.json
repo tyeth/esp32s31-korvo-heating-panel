@@ -1,0 +1,55 @@
+{
+  "writer": "product_description",
+  "updatedAt": "2026-11-07T14:31:32.213Z",
+  "spec": {
+    "meta": {
+      "name": "ESP32-S31 Korvo Board voice HA controller",
+      "description": "Voice-controlled wall dashboard for a Home Assistant setup that controls the TRV radiator valves of each room",
+      "chip": "esp32s31",
+      "frameworks": [
+        "audio",
+        "display",
+        "webui",
+        "mqtt"
+      ]
+    },
+    "features": [
+      {
+        "id": "f1",
+        "text": "Voice control — wake word \"Hi ESP\", spoken commands in English (on-board ES8389 mic and speaker)",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f2",
+        "text": "Room thermostat dashboard — on-board RGB LCD shows every room's TRV with its current temperature and setpoint",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f3",
+        "text": "Touch control — GT1151 touch panel adjusts a room's target temperature",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f4",
+        "text": "Home Assistant integration over MQTT with auto-discovery — the TRV controls appear as climate entities",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f5",
+        "text": "Local web page — SoftAP + mDNS onboarding, Wi-Fi/settings page served by the device",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f6",
+        "text": "Status LED (on-board WS2812 strip) — shows listening / thinking / speaking / offline",
+        "status": "draft",
+        "source": "ai"
+      }
+    ]
+  }
+}
