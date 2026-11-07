@@ -213,9 +213,13 @@ static void render_page(bool saved)
                          "placeholder=\"leave empty to keep the current one\"></label>");
 
     app_webui_send_chunk("<h2>MQTT broker</h2>");
-    field("broker", "Broker URI", app_mqtt_broker_uri(), "mqtt://192.168.1.10:1883");
+    field("broker", "Broker URI (mqtts:// for TLS)", app_mqtt_broker_uri(),
+          "mqtts://homeassistant.gdenu.fi:8123");
     app_webui_send_chunk("<label>Broker password<br><input name=\"apass\" type=password "
                          "placeholder=\"leave empty to keep the current one\"></label>");
+    app_webui_send_chunk("<p style='font-size:12px;color:#888'>TLS is used for an mqtts:// URI. "
+                         "Because the server's certificate is issued for a different name than "
+                         "the one dialled, the name is not verified; the chain still is.</p>");
 
     static const char *const title[HEATING_ROOMS] = {
         "<h2>Bathroom</h2>", "<h2>Hallway</h2>", "<h2>Office</h2>", "<h2>Living room</h2>"

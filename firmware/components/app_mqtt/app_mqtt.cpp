@@ -41,6 +41,10 @@ static char s_pass[65] = {0};
 static char s_uri[129] = {0};
 static char s_user[33] = {0};
 static char s_mqtt_pass[65] = {0};
+/* Optional root CA for the broker's chain (PEM); empty = the built-in pack.
+ * Set from the settings page; kept so a household that pastes its own CA
+ * keeps chain authentication even though the name check is skipped. */
+static char *s_ca_pem = NULL;
 
 /* The product's own data handler (app_mqtt_set_data_handler). */
 static void (*s_data_handler)(const char *topic, int topic_len,
@@ -129,6 +133,27 @@ void app_mqtt_set_online(bool online)
     }
 }
 
+/** The broker URI this panel ships with: the household's Home Assistant
+ *  Mosquitto add-on. Home Assistant terminates TLS itself on 8123, so the
+ *  broker is reached over mqtts on that same port. Its certificate is valid
+ *  for a different name than the one the household dials, so the TLS session
+ *  skips the name check (see mqtt_start_client()); everything else about the
+ *  connection is ordinary MQTT over TLS. */
+#define HEATING_DEFAULT_BROKER_URI "mqtts://homeassistant.gdenu.fi:8123"
+#define HEATING_DEFAULT_BROKER_USER ""
+
+/** True for a URI that runs mqtt over TLS (mqtts:// , or mqtt:// on 8883). */
+static bool mqtt_uri_is_tls(const char *uri)
+{
+    if (uri == NULL) return false;
+    if (strncmp(uri, "mqtts://", 8) == 0 || strncmp(uri, "ssl://", 6) == 0) return true;
+    if (strncmp(uri, "mqtt://", 7) == 0) {
+        const char *port = strrchr(uri, ':');
+        return port != NULL && strncmp(port, ":8883", 5) == 0;
+    }
+    return false;
+}
+
 static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     (void)arg; (void)base;
@@ -161,6 +186,22 @@ static void mqtt_start_client(void)
     cfg.broker.address.uri = s_uri;
     if (s_user[0]) cfg.credentials.username = s_user;
     if (s_mqtt_pass[0]) cfg.credentials.authentication.password = s_mqtt_pass;
+
+    /* The household's broker (Home Assistant's Mosquitto add-on at
+     * https://homeassistant.gdenu.fi:8123) presents a VALID certificate for a
+     * different name — Home Assistant's own *.ui.nabu.casa host. The session
+     * still runs over TLS; only the name check is skipped, which is the whole
+     * difference between "encrypted" and "encrypted to the right server" for a
+     * name nobody can make this broker answer. If a root CA is provided it is
+     * still used to authenticate the chain, so an impostor with an untrusted
+     * certificate is still refused (a wrong-hostname check is not simply off). */
+    if (mqtt_uri_is_tls(s_uri)) {
+        cfg.broker.verification.skip_cert_common_name_check = true;
+        if (s_ca_pem[0]) {
+            cfg.broker.verification.certificate = s_ca_pem;
+        }
+    }
+
     cfg.session.last_will.topic = s_status_topic;
     cfg.session.last_will.msg = "offline";
     cfg.session.last_will.qos = 1;
@@ -172,7 +213,8 @@ static void mqtt_start_client(void)
     }
     esp_mqtt_client_register_event(s_client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(s_client);
-    ESP_LOGI(TAG, "MQTT connecting to %s", s_uri);
+    ESP_LOGI(TAG, "MQTT connecting to %s%s", s_uri,
+             mqtt_uri_is_tls(s_uri) ? " (TLS, certificate name check skipped)" : "");
 }
 
 /* The retry runs on the esp_timer task, never on the event task. */
@@ -359,6 +401,12 @@ static void mqtt_load_config(void)
     n = sizeof(s_user);      nvs_get_str(h, "user", s_user, &n);
     n = sizeof(s_mqtt_pass); nvs_get_str(h, "mpass", s_mqtt_pass, &n);
     nvs_close(h);
+    if (s_uri[0] == 0) {
+        /* Never set up: the household's own broker, over TLS. */
+        strlcpy(s_uri, HEATING_DEFAULT_BROKER_URI, sizeof(s_uri));
+        strlcpy(s_user, HEATING_DEFAULT_BROKER_USER, sizeof(s_user));
+        ESP_LOGI(TAG, "no broker saved — default %s", s_uri);
+    }
 }
 
 /* Public setters (app_mqtt.h): validate, persist, apply. The console
@@ -425,6 +473,27 @@ esp_err_t app_mqtt_set_broker(const char *uri, const char *username, const char 
 bool app_mqtt_configured(void)
 {
     return s_ssid[0] != 0 && s_uri[0] != 0;
+}
+
+void app_mqtt_set_broker_ca(const char *pem)
+{
+    free(s_ca_pem);
+    s_ca_pem = NULL;
+    if (pem == NULL || pem[0] == 0) return;
+    size_t n = strlen(pem) + 1;
+    s_ca_pem = (char *)malloc(n);
+    if (s_ca_pem == NULL) return;
+    memcpy(s_ca_pem, pem, n);
+}
+
+const char *app_mqtt_broker_ca(void)
+{
+    return s_ca_pem ? s_ca_pem : "";
+}
+
+bool app_mqtt_broker_tls(void)
+{
+    return mqtt_uri_is_tls(s_uri);
 }
 
 const char *app_mqtt_broker_uri(void)      { return s_uri; }

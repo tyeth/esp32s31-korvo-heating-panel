@@ -56,6 +56,20 @@ const char *app_mqtt_broker_uri(void);
 const char *app_mqtt_user(void);
 const char *app_mqtt_user_password(void);
 
+/* TLS for the broker. The household's server answers on mqtts:// and presents
+ * a VALID certificate issued for a different name; the session therefore runs
+ * over TLS with the certificate's NAME check skipped (the chain is still
+ * checked against the built-in pack unless a CA is supplied below).
+ */
+
+/** Whether the configured URI runs MQTT over TLS (mqtts://, ssl://, :8883). */
+bool app_mqtt_broker_tls(void);
+
+/** Optional root CA (PEM) for the broker's chain; NULL or "" clears it and the
+ *  built-in certificate pack is used. Copied. */
+void app_mqtt_set_broker_ca(const char *pem);
+const char *app_mqtt_broker_ca(void);
+
 /** Whether this block owns Wi-Fi (false when Matter/RainMaker is co-selected). */
 bool app_mqtt_owns_wifi(void);
 
