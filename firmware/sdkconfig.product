@@ -4,9 +4,11 @@
 # slot for a value the product has to change on top of the board.
 
 # The framework's default event-loop task ("sys_evt") dispatches the Wi-Fi and IP
-# events. On this panel it overflowed its stock 2304-byte stack on the first
-# configured boot — in the framework's own dispatch (MAC / netif / connect
-# handlers), not in anything of ours: app_mqtt's handler now only copies the
-# event into a queue, and the actual work runs on its own "mqtt_net" task. This
-# leaves the shared task the headroom the framework's Wi-Fi dispatch needs.
-CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+# events. On this panel it overflows its stock 2304-byte stack on the first
+# configured boot. Measured: 4096 is in the built image (build/config/sdkconfig.h)
+# and the fault point did not move, so the overflow is inside the framework's own
+# Wi-Fi/IP dispatch, on this task's stack, before any code of ours is reached.
+# Every event the panel cares about is now delivered through a queue to app_mqtt's
+# own "mqtt_net" task, and this leaves the shared task the headroom its dispatch
+# needs; the exact requirement of the framework path is not documented anywhere.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=8192
