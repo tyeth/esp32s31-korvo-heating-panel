@@ -262,8 +262,8 @@ static void wifi_retry_cb(void *arg)
 static TaskHandle_t s_net_task = NULL;
 static esp_timer_handle_t s_net_debounce = NULL;
 static volatile bool s_net_wanted = false;
-/* Filled by the loop's dispatch (esp_event_handler_register_with passes our
- * data pointer straight through), consumed by this task. */
+/* Filled by the loop's dispatch (esp_event_handler_register passes our data
+ * pointer straight through), consumed by this task. */
 typedef struct {
     esp_event_base_t base;
     int32_t          id;

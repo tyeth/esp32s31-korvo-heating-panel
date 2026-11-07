@@ -2,13 +2,22 @@
 # (gen_bmgr_codes/board_manager.defaults). The board manager reports that its
 # file has higher priority than the project sdkconfig.defaults, so this is the
 # slot for a value the product has to change on top of the board.
+#
+# Every value here is checked in build/config/sdkconfig.h after a build —
+# writing a line is not the same as it reaching the image.
 
 # The framework's default event-loop task ("sys_evt") dispatches the Wi-Fi and IP
-# events. On this panel it overflows its stock 2304-byte stack on the first
-# configured boot. Measured: 4096 is in the built image (build/config/sdkconfig.h)
-# and the fault point did not move, so the overflow is inside the framework's own
-# Wi-Fi/IP dispatch, on this task's stack, before any code of ours is reached.
-# Every event the panel cares about is now delivered through a queue to app_mqtt's
-# own "mqtt_net" task, and this leaves the shared task the headroom its dispatch
-# needs; the exact requirement of the framework path is not documented anywhere.
+# events — including everything esp-netif and the Wi-Fi driver post from the
+# esp_timer task during a station start, a deep path on this target. Its stock
+# 2304-byte stack, and later 4096, overflowed on a configured boot; at 8192 that
+# crash is gone. Keep the headroom: the alternative is a boot loop.
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=8192
+
+# The mDNS service task ("mdns") overflows its default 4096-byte stack 15-30 s
+# into an idle session on this panel — a stack-guard hit during its periodic
+# work, not while answering a query. mDNS is a convenience on this product (the
+# settings page is reached by the panel's IP address, or through the onboarding
+# SoftAP at http://192.168.4.1/ while unconfigured), so the task is given room
+# rather than switched off: mdns has no on/off switch, and calling its init
+# would still create the task.
+CONFIG_MDNS_TASK_STACK_SIZE=8192

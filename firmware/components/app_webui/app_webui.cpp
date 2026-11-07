@@ -256,10 +256,19 @@ esp_err_t app_webui_init(void)
         ESP_ERROR_CHECK(loop_err);
     }
 
-    if (mdns_init() == ESP_OK) {
+    /* mDNS is the nicest way to reach the settings page, not the only one: the
+     * panel's IP (or http://192.168.4.1/ on its own SoftAP before it is set up)
+     * works just as well. On this board the mDNS service task ran out of stack
+     * during its periodic work (CONFIG_MDNS_TASK_STACK_SIZE is raised in
+     * sdkconfig.product); a library that cannot come up must still cost only
+     * the hostname, never the boot or the panel's own page. */
+    esp_err_t mdns_err = mdns_init();
+    if (mdns_err == ESP_OK) {
         mdns_hostname_set(host);
         mdns_instance_name_set("ZeroCode device");
         mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    } else {
+        ESP_LOGW(TAG, "mDNS unavailable (%s) — reach the panel by its IP", esp_err_to_name(mdns_err));
     }
 
     webui_start_server();
