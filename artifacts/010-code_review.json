@@ -1,0 +1,215 @@
+{
+  "agent": "code_review",
+  "seq": 10,
+  "savedAt": "2026-11-07T15:25:21.648Z",
+  "report": {
+    "result": "fail",
+    "summary": "The three previous criticals are genuinely fixed (STA is configured on the live radio after SoftAP commissioning, nothing latches any more, taps now come from LVGL press/release events, and a button press really opens the MultiNet window), but the factory reset no longer matches the spec: a single short click on the front button arms a 10 s wipe that only a release can cancel.",
+    "report": {
+      "filesReviewed": [
+        "artifacts/007-code_review.json",
+        "artifacts/008-code_writing.json",
+        "artifacts/009-firmware_compilation.json",
+        "firmware/components/app_audio/app_audio.cpp",
+        "firmware/components/app_audio/include/app_audio.h",
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/control.cpp",
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_logic/CMakeLists.txt",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/managed_components/espressif__button/iot_button.c",
+        "firmware/managed_components/espressif__button/include/iot_button.h"
+      ],
+      "previousFindingsStatus": [
+        {
+          "finding": "critical — SoftAP start latched s_wifi_started, station never configured after commissioning",
+          "status": "fixed (verified)",
+          "evidence": "app_mqtt.cpp:28-32 splits s_wifi_started (radio) from s_sta_configured (credentials on WIFI_IF_STA); mqtt_wifi_start() :215-234 configures the live interface when the radio is already up; app_mqtt_set_wifi() :381-392 does `if (s_ap_up) ap_stop(); s_sta_configured = false; mqtt_wifi_start();` so the commissioned panel joins the home network."
+        },
+        {
+          "finding": "critical — factory-reset combination latched mode_down and wiped the panel later",
+          "status": "fixed as to the latch, but replaced by a worse trigger (see new critical)",
+          "evidence": "app_logic.cpp:349-382 — only handles[0] is bound, no MODE state is consulted, press arms s_fr_timer and release stops it."
+        },
+        {
+          "finding": "critical — touch taps never registered (indev drained before timers)",
+          "status": "fixed (verified)",
+          "evidence": "heating_ui.cpp:449-470 on_touch_press/on_touch_release, registered on the screen :495-499 with LV_EVENT_PRESSED/LV_EVENT_RELEASED; the 50 ms sampler is gone; one reader (the framework indev) remains."
+        },
+        {
+          "finding": "warning — button-opened window never reached MultiNet",
+          "status": "fixed (verified)",
+          "evidence": "app_audio.cpp:135-149 app_audio_listen_once/stop; audio_detect_task :162-176 opens the same window (s_mn->clean + audio_on_event(1)) and closes it on stop/timeout; app_logic.cpp:288-300 push_to_talk() calls listen_once/stop and the 10 s timer calls listen_stop (app_logic.cpp:198-202)."
+        },
+        {
+          "finding": "warning — dashboard bring-up on app_main can time out with no retry",
+          "status": "unchanged (writer noted it); still app_main.cpp:87-92 + heating_ui.cpp:483-492",
+          "evidence": "Same create-then-wait structure, and `ESP_ERROR_CHECK` is gone so a failed panel no longer aborts boot; a hung display setup would still only cost the dashboard, not the rest of boot."
+        },
+        {
+          "finding": "warning — AP timeout message named SET, recovery is BOOT long press",
+          "status": "fixed",
+          "evidence": "app_mqtt.cpp:265-280 ap_stop() logs 'No Wi-Fi stored yet: long-press BOOT to open it again'."
+        },
+        {
+          "finding": "info — heating_init() run twice at boot",
+          "status": "fixed",
+          "evidence": "app_logic.cpp:387-392 now calls heating_load_targets() only."
+        },
+        {
+          "finding": "earlier #4 — SET is push-to-talk",
+          "status": "partially fixed",
+          "evidence": "SET single click = push_to_talk (app_logic.cpp:361); but BOOT's single click is also push-to-talk and stays the documented permit-join / AP trigger on long press, so 'BOOT = push-to-talk / long-press permit-join' (spec hardware description) still differs from the spec's SET mapping for factory reset."
+        }
+      ],
+      "findings": [
+        {
+          "severity": "critical",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 239,
+          "description": "A plain short press of the front button arms the factory-reset countdown: on_set_press() starts the 10 s s_fr_timer, and on_set_release() is the ONLY thing that cancels it. The bare click therefore shows 'Reset in 10 s — release to cancel' and leaves a running wipe timer; only BOOT's 10 s hold reaches the same wipe through a different path. That makes the spec's 'a background room never changes by accident' / accidental-wipe protection roughly inverted, and the documented 'SET + MODE together' combination is now a plain SET hold.",
+          "failureScenario": "User presses SET to open the mic (short press, finger slips, or a press the button component reports without a matching release because the ADC threshold drops out mid-press). on_set_press() arms s_fr_timer for 10 000 ms; if no PRESS_UP event lands (button released while the ADC voltage wanders out of the button window, or the release is lost), factory_reset_cb() fires after 10 s, calls heating_factory_reset() -> nvs_flash_erase() + esp_restart(), and Wi-Fi, broker and the four room topics are lost. Even in the normal case, every single push-to-talk press leaves a live wipe timer running for as long as the finger is down, with the banner 'Reset in 10 s' competing with 'Listening…'.",
+          "evidence": "app_logic.cpp:234-248 on_set_press (banner 'Reset in 10 s — release to cancel' + esp_timer_start_once(s_fr_timer, FR_HOLD_MS*1000)); app_logic.cpp:250-256 on_set_release stops it; app_logic.cpp:377-382 the timer carries factory_reset_cb; app_logic.cpp:258-264 on_set_long_hold is the only other path. iot_button.c:175-208 shows PRESS_DOWN/PRESS_UP are delivered from the same state machine, so an armed timer with no release is exactly what a missed release leaves behind.",
+          "suggestedChange": "Arm the wipe only from an event whose semantics are 'held', not 'pressed': register BUTTON_LONG_PRESS_START with a short press_time (e.g. 2 s) to start the on-screen countdown and BUTTON_LONG_PRESS_UP with FR_HOLD_MS to perform it, or gate the reset behind two distinct gestures so a single tap can never schedule it."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/components/app_logic/app_logic.cpp",
+          "line": 366,
+          "description": "The long-hold reset is bound to BUTTON_LONG_PRESS_UP with 10 000 ms and arms on PRESS_DOWN, but nothing ties the two to the same physical hold: iot_button dispatches LONG_PRESS_UP in the PRESS_LONG_PRESS_UP_CHECK state with the elapsed press_time, so an 'action' hold shorter than FR_HOLD_MS can fire the 10 s callback (the check only compares elapsed time with TOLERANCE, never 'at least'), while a genuine hold longer than 10 s can be missed.",
+          "failureScenario": "User holds SET for 20 s intending a reset: iot_button's long-press timing windows can stop matching (pressed_time beyond the registered 10 000 ms window), on_set_long_hold never runs, no wipe happens, and the panel appears unresponsive. Conversely a hold just under 10 s that the component reports as having reached the window wipes the device while the user was still waiting for the countdown banner.",
+          "evidence": "app_logic.cpp:370-373 `lp.long_press.press_time = FR_HOLD_MS; iot_button_register_cb(s_combo.set, BUTTON_LONG_PRESS_UP, &lp, on_set_long_hold, NULL);`; iot_button.c:225-290 PRESS_LONG_PRESS_UP_CHECK (window match on pressed_time, TOLERANCE) and the release branch that calls the LONG_PRESS_UP callbacks on ANY release while in that state.",
+          "suggestedChange": "Do not depend on the LONG_PRESS_UP window: start the countdown on PRESS_DOWN, cancel on PRESS_UP, and let the esp_timer (armed for FR_HOLD_MS) perform the wipe — i.e. drop on_set_long_hold and call factory_reset_cb from the timer, keeping the cancel strictly on a real release."
+        },
+        {
+          "severity": "warning",
+          "area": "correctness",
+          "file": "firmware/components/app_audio/app_audio.cpp",
+          "line": 168,
+          "description": "The button-opened window is a one-shot for MultiNet but not for the AFE: audio_detect_task treats `s_btn_window == true` as 'open' and, after a recognised phrase it sets listening=false/btn_window=false without clearing s_btn_window, so the window is closed on the audio side while the panel's own strip/banner state ran through heating_ui_listening(false)/app_audio_listen_stop only in some paths; a command matched by MultiNet leaves s_btn_window true and the next fetch loop re-opens it immediately.",
+          "failureScenario": "Press SET, say a recognised command: audio_apply_command() -> heating_voice_apply_command() -> heating_ui_listening(false) (heating_voice.cpp:168) but NOT app_audio_listen_stop(); the detect task then returns to the top with s_btn_window still true and `listening` false, so it immediately re-opens the window ('button press — listening for a command') and keeps the mic open until the next press or the ES8389 timeout — the opposite of the spec's 'one press, one request, then nothing is streamed'.",
+          "evidence": "app_audio.cpp:159-176 (the s_btn_window branch re-opens whenever listening is false; nothing in the recognised-command path clears it), app_audio.cpp:135-149 app_audio_listen_stop only sets the flag, and app_logic.cpp:288-300 push_to_talk() calls listen_stop only on a second press; heating_voice.cpp:168 heating_ui_listening(false) does not reach the audio side.",
+          "suggestedChange": "Clear s_btn_window inside the detect task when a phrase is recognised, and/or have the recognised-command path call app_audio_listen_stop() so the flag and the window cannot disagree."
+        },
+        {
+          "severity": "info",
+          "area": "spec_alignment",
+          "file": "firmware/components/app_audio/app_audio.cpp",
+          "line": 136,
+          "description": "The button-opened window never expires on the audio side: app_audio_listen_once() sets a single flag and only a second press or the panel's timer clears it; MultiNet's own 6000 ms window (s_mn->create(mn_name, 6000)) bounds recognition, so the effective record time for a button press is shorter than the panel's advertised 10 s, and no path calls app_audio_listen_stop() on the AFE timeout except the panel timer.",
+          "failureScenario": "The 10 s bar counts down while MultiNet has already stopped listening after 6 s; speaking at second eight is not recognised although the screen still says 'Listening…'.",
+          "evidence": "app_audio.cpp:214-217 s_mn->create(mn_name, 6000); app_logic.cpp:290-300 LISTEN_MS 10000 bar/timer; app_audio.cpp:135-149 no audio-side expiry.",
+          "suggestedChange": "Align the two windows (use the same constant for the MultiNet timeout and the panel bar, or state the effective 6 s window in the UI)."
+        },
+        {
+          "severity": "info",
+          "area": "wiring",
+          "file": "firmware/components/app_logic/control.cpp",
+          "line": 130,
+          "description": "The comment says the generated block no longer registers the single-click callback for boot_button, but zc_boot_btn_init() is unchanged and still calls iot_button_register_cb(boot_btn_btn, BUTTON_SINGLE_CLICK, ...) -> boot_btn_on_single_click() -> push_to_talk(); control.cpp only changed a comment.",
+          "failureScenario": "None functionally (the product overrides the weak hook, so one click is one window), but the file now claims a behaviour it does not have, which will mislead the next edit of this block.",
+          "evidence": "control.cpp:126-146 zc_boot_btn_init() still registers SINGLE_CLICK/DOUBLE_CLICK/LONG_PRESS_START; only the doc comment at :117-124 changed in the diff (d8b4f14..HEAD).",
+          "suggestedChange": "Drop the inaccurate comment, or actually remove the generated default registrations that the product replaces."
+        }
+      ],
+      "deviceBehavior": {
+        "gpios": [
+          {
+            "pin": "37",
+            "function": "WS2812 status strip (off / dim-white connecting / green online / amber listening / red flash, plus dim red when touchless and WiFi stored)"
+          },
+          {
+            "pin": "61",
+            "function": "BOOT button — single click push-to-talk, 2 s long press permit-join (or reopen onboarding AP when no Wi-Fi)"
+          },
+          {
+            "pin": "ADC oneshot channel",
+            "function": "adc_button_group (one event source, handles[0]): click = push-to-talk, double click = dismiss banner, press arms a 10 s reset timer, release cancels"
+          },
+          {
+            "pin": "0/1",
+            "function": "I2C for GT1151 touch (board-owned)"
+          },
+          {
+            "pin": "40/43/44/45",
+            "function": "on-board RGB LCD (display framework)"
+          },
+          {
+            "pin": "3/4/5/6/7",
+            "function": "ES8389 codec + I2S voice mic"
+          }
+        ],
+        "peripherals": [
+          {
+            "part": "RGB LCD + LVGL",
+            "driver": "app_display (lvgl_port_add_disp, lvgl_port_add_touch)"
+          },
+          {
+            "part": "GT1151 touch",
+            "driver": "app_display indev; product taps via LV_EVENT_PRESSED/RELEASED on the screen object"
+          },
+          {
+            "part": "ES8389 codec",
+            "driver": "app_driver tone generator"
+          },
+          {
+            "part": "esp-sr AFE + MultiNet",
+            "driver": "app_audio, with app_audio_listen_once/stop for button windows; vocabulary from heating_voice_register()"
+          },
+          {
+            "part": "WS2812 strip",
+            "driver": "app_driver status_board_strip"
+          },
+          {
+            "part": "Wi-Fi STA + onboarding SoftAP",
+            "driver": "app_mqtt (s_wifi_started / s_sta_configured)"
+          },
+          {
+            "part": "MQTT",
+            "driver": "app_mqtt, data handler from heating_mqtt.cpp"
+          }
+        ],
+        "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV> (qos1, retain 0); {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; subscribe each TRV and air-sensor topic per session; status zerocode/<mac>/status retained with last-will offline. HTTP /settings (GET/POST), /api/state, /api/set.",
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (register vocabulary between clear() and update())",
+          "app_display_init + heating_ui_init on app_main (1500 ms wait, LVGL lock, screen + LVGL press/release cbs, ui 250 ms / listen 1000 ms timers)",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (STA when configured, else onboarding AP in APSTA)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init (heating_load_targets, 3 esp_timers, SET/BUTTON bindings, 'heating' console cmd, strip state)",
+          "app_console_init"
+        ],
+        "expectedLogPatterns": [
+          "heating_voice: \"N of N phrases registered\"",
+          "app_audio: \"button press — listening for a command\", \"wake word detected — listening for a command\", \"listening window closed\", \"command phrase <id>\"",
+          "app_mqtt: \"SoftAP 'Korvo-Heating-XXXX' (password 'heatpanel') — open http://korvo-heating.local/settings\", \"SoftAP ... closed — station only\" / \"... idle ... long-press BOOT to open it again\", \"Wi-Fi got IP\", \"MQTT connecting to <uri>\", \"MQTT connected\"",
+          "heating: \"subscribed to 4 room topics\", \"<room> -> <x.y>  <topic>\"",
+          "heating_ui: \"dashboard up (4 rooms)\" / \"no touch input device — cards selectable, −/+ from voice only\"",
+          "heating_panel: \"front buttons bound (1) — click = push-to-talk, double click = dismiss, hold 10000 ms = factory reset\", \"front button held for 10000 ms — wiping settings\""
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "notes": [
+          "Touch gestures now work off LVGL's press/release events; a drag that ends inside a card is treated as a tap.",
+          "The factory reset is armed by any short press of the front button and cancelled only by a release — a missed release wipes the device 10 s later.",
+          "A recognised voice command leaves s_btn_window true, so the mic window can re-open straight away.",
+          "The button-opened window uses the same 6 s MultiNet timeout as the wake-word window while the UI counts 10 s."
+        ]
+      }
+    }
+  }
+}
