@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:34:08.565Z",
+  "updatedAt": "2026-11-07T14:34:31.526Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -28,7 +28,7 @@
       },
       {
         "id": "f3",
-        "text": "Touch control — GT1151 touch panel adjusts a room's target temperature",
+        "text": "Touch control — GT1151 touch panel selects a room and raises/lowers its target temperature, step 0.5 °C within the TRV's allowed range",
         "status": "draft",
         "source": "ai"
       },
@@ -46,7 +46,7 @@
       },
       {
         "id": "f8",
-        "text": "Shows only the smart-heated rooms (4 of the 6 rooms in the house: which ones is for the user to confirm)",
+        "text": "Shows the 4 smart-heated rooms — bathroom, hallway, office, living room (kitchen and bedroom have no smart TRV and stay off the screen)",
         "status": "draft",
         "source": "ai"
       },
