@@ -1,0 +1,81 @@
+{
+  "writer": "product_testing",
+  "updatedAt": "2026-11-07T17:28:26.517Z",
+  "tests": {
+    "schema": "zc-hwtests/1",
+    "tests": [
+      {
+        "name": "Boot health — no panic / abort / watchdog reset",
+        "category": "boot",
+        "description": "Power the panel over USB-C (or press the reset button) and let it boot once. This item is the ABSENCE of a crash: it can only be ticked by hand after the board has been up and quiet.",
+        "manual": true
+      },
+      {
+        "name": "Boot reaches the application banner",
+        "category": "boot",
+        "logPattern": "app_init: Project name:\\s+zerocode_ai_firmware"
+      },
+      {
+        "name": "Board peripherals initialise (LED strip, codec, RGB panel, touch)",
+        "category": "boot",
+        "logSequence": [
+          "BOARD_MANAGER: All peripherals initialized",
+          "DEV_LED_STRIP: Successfully initialized LED strip",
+          "DEV_AUDIO_CODEC: Successfully initialized codec: audio_dac",
+          "DEV_DISPLAY_LCD: Successfully initialized LCD display: display_lcd"
+        ]
+      },
+      {
+        "name": "Voice framework initialises (offline wake word + 21 command phrases)",
+        "category": "voice",
+        "logSequence": [
+          "app_audio: DSP dot product: generic kernel linked",
+          "heating_voice: 21 of 21 phrases registered",
+          "app_audio: Voice framework initialized"
+        ]
+      },
+      {
+        "name": "LVGL display port and RGB panel are registered (the previous boot abort is gone)",
+        "category": "display",
+        "description": "Look for the app_display panel line naming the RGB panel WITHOUT the \"(not registered)\" suffix, and no LVGL task restart. This is where the earlier firmware aborted with 'assert failed'.",
+        "logSequence": [
+          "LVGL: Starting LVGL task",
+          "app_display: Panel 'display_lcd' from board 'esp32_s31_korvo_1': generic_rgb rgb 800x480$",
+          "app_display: Touch 'lcd_touch' from board 'esp32_s31_korvo_1'",
+          "app_display: Display initialized"
+        ]
+      },
+      {
+        "name": "Dashboard is built (4 room cards)",
+        "category": "display",
+        "logPattern": "heating_ui: dashboard up \\(4 rooms\\)"
+      },
+      {
+        "name": "Firmware start line and console ready",
+        "category": "boot",
+        "logSequence": [
+          "app_console: Console ready",
+          "app_main: ZeroCode AI firmware started"
+        ]
+      },
+      {
+        "name": "LCD shows the four room cards (bathroom, hallway, office, living room)",
+        "category": "display",
+        "description": "After boot, the 800x480 screen should show a 2x2 grid of room cards with current and target temperatures plus a footer with the link state. Tick when you can see it on the panel.",
+        "manual": true
+      },
+      {
+        "name": "Status LED strip lights (dim white while connecting, green when online)",
+        "category": "led",
+        "description": "Watch the WS2812 strip at boot: it should glow dim white while Wi-Fi/MQTT connect, then turn green once the broker is up. Tick when you have seen it.",
+        "manual": true
+      },
+      {
+        "name": "Console answers on the board",
+        "category": "console",
+        "logPattern": "uptime: \\d+d \\d\\dh \\d\\dm \\d\\ds"
+      }
+    ],
+    "notes": "Real board: ESP32-S31-Korvo-1, firmware 1.0.0 (ELF 6d891b034). Established from the previous session's evidence: the firmware aborts at boot (assert failed / backtrace, then rst:0xc SW_CPU_RESET loop) and the RGB LCD stays black. The two LVGL-task starts and the 'assert failed' fall immediately after the display panel line; the LCD backlight comes on but nothing is drawn."
+  }
+}
