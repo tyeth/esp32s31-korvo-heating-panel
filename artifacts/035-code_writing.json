@@ -1,0 +1,29 @@
+{
+  "agent": "code_writing",
+  "seq": 35,
+  "savedAt": "2026-11-07T17:49:07.534Z",
+  "report": {
+    "result": "pass",
+    "summary": "Corrected: the default broker is now the MQTT listener (mqtt://homeassistant.gdenu.fi:1883), not the Home Assistant web port 8123; the TLS form is mqtts://…:8883 and is a one-field change on /settings. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "You are right: 8123 is Home Assistant's own web UI, not a broker listener. Aiming the default URI there could never answer an MQTT session, so the default is now mqtt://homeassistant.gdenu.fi:1883 — the Mosquitto add-on's plain MQTT port.",
+      "If the household's add-on exposes only the TLS listener, the correct URI is mqtts://homeassistant.gdenu.fi:8883; that is a one-field change on /settings and needs no rebuild, so I did not guess which listener is open — the settings page now states the distinction (broker port ≠ HA web port) and its placeholder follows the new default.",
+      "The certificate name-check skip is untouched and still applies only to TLS URIs (mqtts:// or :8883), with the chain verified against the built-in pack or a supplied CA."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp",
+      "firmware/components/app_logic/heating_web.cpp"
+    ],
+    "build": "esp32s31 success — 0x2ccd80 (2936192 B) in a 0x380000 partition, 20% free; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "default broker URI targeted the Home Assistant web port (8123), which cannot serve MQTT",
+        "fix": "default is now mqtt://homeassistant.gdenu.fi:1883; the code comment and the settings page explain that the broker has its own port (1883 plain, 8883 TLS) and that the TLS form is mqtts://…:8883"
+      }
+    ],
+    "openQuestions": [
+      "Which listener your Mosquitto add-on actually exposes (1883 plain, 8883 TLS, or a custom port) is only visible from the add-on's configuration; set it once on /settings and it is stored in NVS from then on."
+    ]
+  }
+}
