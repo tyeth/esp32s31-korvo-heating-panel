@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:37:49.567Z",
+  "updatedAt": "2026-11-07T14:37:51.517Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -28,7 +28,7 @@
       },
       {
         "id": "f2",
-        "text": "Room thermostat dashboard — on-board RGB LCD shows every room with its current temperature and target temperature",
+        "text": "Room thermostat dashboard — on-board RGB LCD shows the 4 rooms with current temperature (from the air sensors) and target (from each TRV's reported state)",
         "status": "draft",
         "source": "ai"
       },
