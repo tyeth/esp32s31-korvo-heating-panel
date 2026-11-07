@@ -1,0 +1,169 @@
+{
+  "agent": "code_review",
+  "seq": 44,
+  "savedAt": "2026-11-07T18:48:04.828Z",
+  "report": {
+    "result": "pass",
+    "summary": "The configured-boot stack overflow is fixed at the source (Wi-Fi/IP handlers now only notify a dedicated mqtt_net task, broker start debounced 1 s after GOT_IP, event-task stack raised to 4 KB) and the display boot-loop is confirmed gone; remaining items are the previously accepted spec deviations plus one info note on REPL stack headroom.",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish {\"current_heating_setpoint\": \"<x.y>\"} to zigbee2mqtt/<TRV> (qos1, retain 0); on connect subscribe every TRV/air-sensor topic and publish an empty message to each; {\"time\": 254} to zigbee2mqtt/bridge/request/permit_join; retained status zerocode/<mac12>/status with last-will. HTTP /settings (GET/POST), /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (generic DSP kernel, English vocabulary, AFE + MultiNet)",
+          "app_display_init (single setup task, lvgl_port_add_disp_rgb + add_touch, app_display_ready()) + heating_ui_init (waits for ready, builds cards)",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (mqtt_net task created, handlers registered, NVS config or defaults, STA / onboarding AP)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init (TZ + SNTP task)",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC, decimals>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup (guided)"
+        ],
+        "expectedLogPatterns": [
+          "app_audio: \"DSP dot product: generic kernel linked (generic C (app_dsp_shim))\"",
+          "heating_voice: \"17 of 17 English phrases registered\"; vocabulary list logged as the window opens",
+          "app_display: one \"Display setup started\"; a second init logs \"app_display_init() called twice — ignored\"",
+          "heating_ui: \"dashboard up (4 rooms)\"",
+          "app_mqtt: \"MQTT initialized (node …)\"; on association \"Wi-Fi got IP\" from task mqtt_net, then ~1 s later \"MQTT connecting to …\"",
+          "app_mqtt: \"Wi-Fi disconnected — retrying in 30 s\" (from mqtt_net) then \"Wi-Fi reconnect attempt\"",
+          "heating: \"subscribed to N room topic(s); requested fresh state of M\"",
+          "app_console: \"Console ready…\"; app_main: \"ZeroCode AI firmware started\""
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button — click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD 800x480",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "The configured-boot stack overflow is addressed at the source (handlers notify an mqtt_net task; client starts 1 s after GOT_IP) plus CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096 in sdkconfig.defaults; not yet confirmed by a boot with stored credentials reaching the console.",
+          "The product's console REPL is 8 KB on this target; a command handler running in the REPL also runs on that stack, no REPL-stack headroom is configured.",
+          "No factory state on a built image: mqtt_load_config() seeds 'free4all' and the default broker when nothing is stored, so a bare panel is already 'configured'.",
+          "Default broker is plain mqtt://homeassistant.gdenu.fi:1883; TRV poll publishes an empty payload to command-bearing state topics.",
+          "Factory reset is a 10 s single-button hold.",
+          "Voice vocabulary holds three numbers per room; the spec's 'set the office to 21' has no phrase."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (single setup task, lvgl_port_add_disp_rgb + add_touch, app_display_ready())",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim's generic dot product",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (mqtt_net task for Wi-Fi/IP work, STA / onboarding SoftAP, CA in NVS, state-request poll)",
+            "part": "Wi-Fi / MQTT"
+          }
+        ]
+      },
+      "filesReviewed": [
+        "artifacts/040-code_review.json",
+        "artifacts/041-functional_testing.json",
+        "artifacts/042-code_writing.json",
+        "artifacts/043-firmware_compilation.json",
+        "artifacts/device.log",
+        "firmware/components/app_mqtt/app_mqtt.cpp",
+        "firmware/sdkconfig.defaults"
+      ],
+      "findings": [
+        {
+          "area": "memory_safety",
+          "description": "The console REPL is configured with an 8 KB stack on this target (non-USB-JTAG console) but the project sets no REPL-stack headroom, while the product keeps product-lifetime state (3 esp_timers, s_combo, s_listen_timer) across commands and the 'heating' command runs heating_clamp_tenth and a full lookup on it; the header (app_console.h) explicitly says standby support is required for the non-default REPL stack.",
+          "evidence": "firmware/components/app_console/include/app_console.h:1-30 (REPL stack/standby note); app_logic.cpp 'heating' command body; no CONFIG_ESP_CONSOLE_*_STACK or standby symbols in sdkconfig.defaults.",
+          "failureScenario": "A user runs `heating set 0 21.5` shortly after the boot with the audio/AFE and MQTT tasks alive: the REPL task's default 8 KB is shared with the command handler's locals, and a stack overflow there panics the panel the same way sys_evt did — no headroom is configured and nothing bounds it.",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 750,
+          "severity": "info",
+          "suggestedChange": "Size the REPL explicitly (CONFIG_ESP_CONSOLE_* REPL stack/standby) or keep command handlers' locals small and off the audio task paths."
+        },
+        {
+          "area": "spec_alignment",
+          "description": "Voice vocabulary still holds three numbers per room (20, 21.5, 21-and-a-half) — 17 phrases at runtime. The spec's own example 'set the office to 21' has no phrase, so that sentence ends in 'Sorry, not understood'.",
+          "evidence": "heating_voice.cpp k_variant_tenth = {200, 215, 210}; the functional report's '17 of 17 English phrases registered'.",
+          "failureScenario": "A user following the spec says 'set the office to 21': nothing in MultiNet's list matches, nothing is published.",
+          "file": "firmware/components/app_logic/heating_voice.cpp",
+          "line": 66,
+          "severity": "warning",
+          "suggestedChange": "Add 21 (and ideally every whole degree in the panel's range) as variants if MultiNet's phrase budget allows, or document the limit as a deviation."
+        }
+      ],
+      "previousFindingsStatus": [
+        {
+          "evidence": "app_mqtt.cpp:241-256 STA_START answered in place by esp_wifi_connect(); :250-330 disconnect/GOT_IP handlers notify s_net_task; :726-745 net task created (4 KB) before the handlers are registered; sdkconfig.defaults CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096. The functional run's crash is a sys_evt stack overflow and the old handler did logging, timer creation and MQTT client start on it.",
+          "finding": "fail — configured boot aborts with 'A stack overflow in task sys_evt' right after MQTT init",
+          "status": "fixed at the source (handlers now only notify); not yet confirmed by a boot with stored credentials"
+        },
+        {
+          "evidence": "artifacts/041 functional run: one display_setup pass, RGB panel registered once, 'Display initialized', no 'Stopped LVGL task', boot continues to the console on a fresh panel.",
+          "finding": "fail — real board boot-loop from double display bring-up",
+          "status": "fixed (confirmed on the emulator run)"
+        },
+        {
+          "evidence": "app_mqtt.cpp:145-150 HEATING_DEFAULT_BROKER_URI \"mqtt://homeassistant.gdenu.fi:1883\"; TLS only for mqtts/ssl/:8883.",
+          "finding": "warning — default broker is plain MQTT",
+          "status": "unchanged (owner's choice)"
+        },
+        {
+          "evidence": "heating.cpp:381-397 empty-payload publish to every TRV state topic on each connect.",
+          "finding": "warning — state poll publishes to zigbee2mqtt device topics",
+          "status": "unchanged"
+        },
+        {
+          "evidence": "app_logic.cpp:247-258 / :375-376 1 s hold arms a 10 s wipe on handles[0].",
+          "finding": "warning — factory reset is a single 10 s button hold",
+          "status": "unchanged (documented deviation)"
+        },
+        {
+          "evidence": "artifacts/041 notes a fresh panel takes the SoftAP onboarding path although compiled-in defaults exist; app_mqtt.cpp mqtt_load_config seeds 'free4all' and the broker only when NVS is empty.",
+          "finding": "info — spec.json marks features 'built' while hardware items are unverified",
+          "status": "unchanged (still unverified: touch, LEDs, voice, phone onboarding)"
+        }
+      ]
+    }
+  }
+}
