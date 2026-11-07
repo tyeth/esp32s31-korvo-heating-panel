@@ -1,0 +1,30 @@
+{
+  "agent": "firmware_compilation",
+  "seq": 9,
+  "savedAt": "2026-11-07T15:24:35.447Z",
+  "report": {
+    "result": "pass",
+    "summary": "Rebuild of updated firmware succeeded for esp32s31; no compile or link errors.",
+    "report": {
+      "binaryPath": "firmware/build/zerocode_ai_firmware.bin",
+      "board": "esp32-s31-korvo-1",
+      "buildId": "cb:zerocode-build-lambda:9b3ea3ff-fb31-422a-b3e9-1882121c2699",
+      "exitCode": 0,
+      "firmwareSize": "0x2cc110 (2933008 B)",
+      "flashUsage": "app partition 0x380000 (3670016 B); 0xb3ef0 (737008 B) = 20% free; bootloader 0x5700 (22272 B), 9% free",
+      "mergedImage": "firmware/build/merged_flash.bin (0xa092c7 bytes, flash at 0x0)",
+      "notes": [
+        "Incremental rebuild of updated sources (compile phase 8.1 s, 13 ninja steps): ELF linked, image created, partition size check passed.",
+        "Binary grew by 256 B vs the previous build (0x2cc010 -> 0x2cc110); partition headroom unchanged at 20%.",
+        "Ship artifacts produced: merged_flash.bin plus delta upload (19 files, 15.6 MB)."
+      ],
+      "previousBuildId": "cb:zerocode-build-lambda:3f9f069f-ecd8-4d2f-9a19-dcea85d83dbe",
+      "ramUsage": "not reported in build output (no static DRAM/IRAM summary line in log tail)",
+      "status": "success",
+      "target": "esp32s31",
+      "warnings": [
+        "Kconfig warnings from managed/upstream components (not project code): espressif__esp-sr Kconfig.projbuild uses 'default False' for SR_WN_WN9_* wake-word bools, and IDF nimble/fatfs Kconfig use 'default 0' for bools — each treated as 'n'. Cosmetic, unrelated to the changed sources."
+      ]
+    }
+  }
+}
