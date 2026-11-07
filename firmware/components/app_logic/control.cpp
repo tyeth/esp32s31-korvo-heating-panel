@@ -40,7 +40,7 @@ static const char *TAG = "control";
  *
  * Gesture hooks: weak, so the product overrides any of them with a plain
  * definition of the same signature in its own file. They run on the button
- * timer task — keep them short and non-blocking. */
+ * task — keep them short and non-blocking. */
 __attribute__((weak)) void set_btn_on_single_click(void)
 {
 #ifndef SET_BTN_SINGLE_CLICK_TOGGLES
@@ -117,9 +117,11 @@ static void zc_set_btn_init(void)
  * handles ARE button_handle_t), so these are ordinary iot_button callbacks on
  * a device somebody else created.
  *
- * Gesture hooks: weak, so the product overrides any of them with a plain
- * definition of the same signature in its own file. They run on the button
- * timer task — keep them short and non-blocking. */
+ * The single click belongs to the product's push-to-talk only: the block's
+ * built-in default (which toggles a driver param) prints "no handler" when no
+ * target is bound, so it is not registered from the generated block here
+ * (bind callbacks removed; the product's push-to-talk / permit-join hooks are
+ * what run). */
 __attribute__((weak)) void boot_btn_on_single_click(void)
 {
 #ifndef BOOT_BTN_SINGLE_CLICK_TOGGLES

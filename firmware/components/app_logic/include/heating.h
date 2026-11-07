@@ -134,6 +134,8 @@ esp_err_t heating_voice_register(void);
 void heating_voice_apply_command(int phrase_id);
 /** Relative commands ("plus one") act on the room selected on screen. */
 void heating_voice_set_selected_room(int idx);
+/** What the panel currently offers (for a button that opens the window). */
+bool heating_ui_has_touch(void);
 /** A listening window that closed without a recognised command. */
 void heating_voice_not_understood(void);
 

@@ -16,6 +16,7 @@
 
 #include "app_logic.h"
 #include "app_config.h"
+#include "app_audio.h"
 #include "app_driver.h"
 #include "app_mqtt.h"
 #include "heating.h"
@@ -107,6 +108,14 @@ static volatile bool s_refused = false;
 static esp_timer_handle_t s_listen_timer = NULL;
 static esp_timer_handle_t s_red_timer = NULL;
 
+/* The first half of the SET+MODE combination: SET held this long arms the
+ * factory-reset countdown (the countdown itself then runs FR_HOLD_MS). */
+#define COMBO_ARM_MS 1000
+
+/* Brought up without a working touch panel: there is no on-screen way in, so
+ * the panel doubles as a device that must be set up over the console. */
+static bool s_touchless = false;
+
 /* ── status strip ────────────────────────────────────────────────────── */
 
 static void set_strip(uint8_t hue, uint8_t sat, uint8_t bri)
@@ -134,6 +143,8 @@ static void strip_idle(void)
     else if (s_refused)              set_strip(HUE_RED,   SAT_MAX, BRI_DAY);
     else if (heating_online())       set_strip(HUE_GREEN, SAT_MAX, BRI_DAY);
     else if (app_mqtt_configured())  set_strip(0, 0, BRI_DIM);   /* connecting */
+    else if (s_touchless && !app_mqtt_wifi_missing())
+                                     set_strip(HUE_RED, 0, BRI_DIM);  /* console only */
     else                             strip_off();                /* not set up */
 }
 
@@ -183,10 +194,11 @@ void heating_ui_listening(bool listening)
     }
 }
 
-/* Called when the 10 s window ends with no recognised command. */
+/* The 10 s window ended with nothing recognised: the microphone closes too. */
 static void listen_timeout_cb(void *arg)
 {
     (void)arg;
+    app_audio_listen_stop();
     heating_voice_not_understood();
 }
 
@@ -197,9 +209,7 @@ static void listen_timeout_cb(void *arg)
 
 typedef struct {
     button_handle_t set;
-    button_handle_t mode;
-    bool set_down;
-    bool mode_down;
+    bool set_down;      /* SET is held right now */
 } combo_t;
 static combo_t s_combo;
 static esp_timer_handle_t s_fr_timer = NULL;
@@ -208,68 +218,82 @@ static void factory_reset_cb(void *arg)
 {
     (void)arg;
     heating_ui_banner("Factory reset");
-    ESP_LOGW(TAG, "SET + MODE held for %d ms — wiping settings", FR_HOLD_MS);
+    ESP_LOGW(TAG, "front button held for %d ms — wiping settings", FR_HOLD_MS);
     set_strip(HUE_RED, SAT_MAX, BRI_DAY);
     heating_factory_reset();
 }
 
-/* SET + MODE held together: the countdown banner runs for 10 s, then the
- * settings go and the panel reboots into onboarding. */
-static void combo_eval(void)
+static void on_set_double_click(void *arg, void *usr_data);
+static void alert_silence(void);
+
+/* The hold: SET pressed starts the countdown, and only an actual release
+ * cancels it. Ten seconds of hold wipes the settings and reboots the panel
+ * into onboarding — the spec's factory reset, on the one front button the
+ * board's button device reports. */
+static void on_set_press(void *arg, void *usr_data)
 {
-    bool both = s_combo.set_down && s_combo.mode_down;
-    if (!both) {
-        if (s_fr_timer) esp_timer_stop(s_fr_timer);
-        return;
-    }
-    heating_ui_banner("Factory reset in 10 s — release to cancel");
+    (void)arg; (void)usr_data;
+    heating_ui_touch_activity();
+    s_combo.set_down = true;
+    heating_ui_banner("Reset in 10 s — release to cancel");
     if (s_fr_timer) {
         esp_timer_stop(s_fr_timer);
         esp_timer_start_once(s_fr_timer, (uint64_t)FR_HOLD_MS * 1000);
     }
 }
 
-static void on_set_press(void *arg, void *usr_data)
-{
-    (void)arg; (void)usr_data;
-    heating_ui_touch_activity();
-    s_combo.set_down = true;
-    combo_eval();
-}
-
 static void on_set_release(void *arg, void *usr_data)
 {
     (void)arg; (void)usr_data;
     s_combo.set_down = false;
-    combo_eval();
+    /* Any release disarms — nothing can latch. */
+    if (s_fr_timer) esp_timer_stop(s_fr_timer);
 }
 
-static void on_mode_press(void *arg, void *usr_data)
+static void on_set_double_click(void *arg, void *usr_data)
 {
     (void)arg; (void)usr_data;
-    s_combo.mode_down = true;
-    combo_eval();
+    alert_silence();
 }
 
-static void on_mode_release(void *arg, void *usr_data)
+/* The hold that ran to completion. */
+static void on_set_long_hold(void *arg, void *usr_data)
 {
     (void)arg; (void)usr_data;
-    s_combo.mode_down = false;
-    combo_eval();
+    if (!s_combo.set_down) return;
+    factory_reset_cb(NULL);
+}
+
+/* Dismiss a banner or a running window that is only feedback; never opens the
+ * microphone. */
+static void alert_silence(void)
+{
+    heating_ui_touch_activity();
+    if (s_listen_timer) esp_timer_stop(s_listen_timer);
+    heating_ui_banner("");
 }
 
 /* One push-to-talk window: opens the mic for 10 s, a second press closes it.
- * Shared by SET and BOOT, the two documented triggers. */
+ * Shared by SET and BOOT, the two documented triggers; the second press does
+ * not merely hide the window — it takes the microphone away as well. */
 static void push_to_talk(void)
 {
     heating_ui_touch_activity();
     if (s_listening) {
         heating_ui_listening(false);
+        app_audio_listen_stop();
         return;
     }
+    app_audio_listen_once();
     heating_ui_listening(true);
     heating_ui_banner("Listening\xE2\x80\xA6");
     if (s_listen_timer) esp_timer_start_once(s_listen_timer, (uint64_t)LISTEN_MS * 1000);
+}
+
+/* drivers/board_button's long press on the group handle. */
+void set_btn_on_long_press(void)
+{
+    alert_silence();
 }
 
 static void on_set_click(void *arg, void *usr_data)
@@ -301,19 +325,30 @@ void boot_btn_on_long_press(void)
         heating_ui_banner(msg);
         return;
     }
-    if (heating_permit_join() == ESP_OK) {
-        heating_ui_banner("Permit join for 4 minutes sent");
-    } else {
-        heating_ui_banner("Offline — controls disabled");
-        heating_ui_rejected();
+    if (heating_online()) {
+        if (heating_permit_join() == ESP_OK) {
+            heating_ui_banner("Permit join for 4 minutes sent");
+            return;
+        }
     }
+    heating_ui_banner("Offline — controls disabled");
+    heating_ui_rejected();
 }
 
 /**
- * The board's adc_button_group is one device carrying SET, MODE, VOL− and
- * VOL+, reported as four button handles in that order. SET and MODE are the
- * factory-reset combination; any of the four wakes the screen.
- */
+ * The board's adc_button_group carries SET, MODE, VOL− and VOL+ on ONE
+ * iot_button device: the button component reports the whole group as a single
+ * button and only handles[0] is a source of events (see control.cpp). So the
+ * front panel is driven entirely through that handle:
+ *
+ *   click        push-to-talk (spec's front SET button)
+ *   long press   SET — the combination's first half: with MODE also down the
+ *                countdown below arms
+ *   double click SET — the unmodified long hold, without MODE
+ *   long hold    SET+MODE for ten seconds: factory reset
+ *
+ * MODE's own events are never consulted (no release could clear a state they
+ * set, which is exactly how a factory reset once armed itself). */
 static void bind_adc_buttons(void)
 {
     void *h = NULL;
@@ -327,26 +362,30 @@ static void bind_adc_buttons(void)
         return;
     }
 
-    s_combo.set  = btns->button_handles[0];
-    s_combo.mode = btns->num_buttons > 1 ? btns->button_handles[1] : NULL;
+    s_combo.set = btns->button_handles[0];
 
+    iot_button_register_cb(s_combo.set, BUTTON_SINGLE_CLICK, NULL, on_set_click, NULL);
+    iot_button_register_cb(s_combo.set, BUTTON_DOUBLE_CLICK, NULL, on_set_double_click, NULL);
+
+    /* The one hold that means anything: SET held for ten seconds. The press
+     * and release bracket it (any release disarms), and the arm point is the
+     * elapsed-time event, not a second threshold. */
     iot_button_register_cb(s_combo.set, BUTTON_PRESS_DOWN, NULL, on_set_press, NULL);
     iot_button_register_cb(s_combo.set, BUTTON_PRESS_UP, NULL, on_set_release, NULL);
-    /* SET is the documented push-to-talk button: one click opens the mic, the
-     * 10 s window closes it again. MODE keeps its own press/release so the
-     * two held together still reach the factory-reset countdown. */
-    iot_button_register_cb(s_combo.set, BUTTON_SINGLE_CLICK, NULL, on_set_click, NULL);
-    if (s_combo.mode) {
-        iot_button_register_cb(s_combo.mode, BUTTON_PRESS_DOWN, NULL, on_mode_press, NULL);
-        iot_button_register_cb(s_combo.mode, BUTTON_PRESS_UP, NULL, on_mode_release, NULL);
-    }
-    ESP_LOGI(TAG, "front buttons bound (%d) — SET = push-to-talk, SET+MODE %d ms = factory reset",
-             (int)btns->num_buttons, FR_HOLD_MS);
+    button_event_args_t lp = {};
+    lp.long_press.press_time = FR_HOLD_MS;
+    iot_button_register_cb(s_combo.set, BUTTON_LONG_PRESS_UP, &lp, on_set_long_hold, NULL);
+
+    ESP_LOGI(TAG, "front buttons bound (%d) — click = push-to-talk, double click = dismiss, "
+                  "hold %d ms = factory reset", (int)btns->num_buttons, FR_HOLD_MS);
 }
 
 esp_err_t app_logic_init(void)
 {
-    heating_init();
+    /* heating_init() already ran in app_main (the model and the MQTT handler
+     * come up before the frameworks that use them); this only re-reads the
+     * saved targets so the cards start on them. */
+    heating_load_targets();
 
     const esp_timer_create_args_t red_args = { .callback = &red_timer_cb, .name = "heating_red" };
     esp_timer_create(&red_args, &s_red_timer);
@@ -358,6 +397,10 @@ esp_err_t app_logic_init(void)
     bind_adc_buttons();
     heating_console_register();
     heating_broker_ready(false);
+
+    /* The panel may already have come up before this ran: point the strip at
+     * what the panel actually offers. */
+    s_touchless = !heating_ui_has_touch();
 
     /* "Connecting" until the broker session is up (off before Wi-Fi exists). */
     strip_idle();

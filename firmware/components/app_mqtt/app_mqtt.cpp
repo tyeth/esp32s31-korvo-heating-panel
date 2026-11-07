@@ -25,7 +25,11 @@ static const char *TAG = "app_mqtt";
 static app_driver_handle_t s_handle = 0;
 static esp_mqtt_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;
-static bool s_wifi_started = false;
+/* Radio state, one flag per interface: the onboarding SoftAP may bring the
+ * radio up (APSTA) long before the station has any credentials, so "started"
+ * and "station configured" are two different facts. */
+static bool s_wifi_started = false;      /* the radio is up */
+static bool s_sta_configured = false;    /* WIFI_IF_STA carries credentials */
 
 /* Node identity: station MAC as lowercase hex — stable, unique per board. */
 static char s_node_id[13] = {0};
@@ -210,14 +214,24 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t event_i
 
 static void mqtt_wifi_start(void)
 {
-    if (s_wifi_started || s_ssid[0] == 0) return;
+    if (s_sta_configured || s_ssid[0] == 0) return;
     wifi_config_t wc = {};
     strlcpy((char *)wc.sta.ssid, s_ssid, sizeof(wc.sta.ssid));
     strlcpy((char *)wc.sta.password, s_pass, sizeof(wc.sta.password));
+    if (s_wifi_started) {
+        /* The radio is already up (brought up by the onboarding SoftAP):
+         * configure the station on the live interface and join. */
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
+        s_sta_configured = true;
+        esp_wifi_disconnect();
+        esp_wifi_connect();
+        return;
+    }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
     s_wifi_started = true;
+    s_sta_configured = true;
 }
 
 /* ── SoftAP onboarding ────────────────────────────────────────────────
@@ -248,20 +262,32 @@ bool app_mqtt_ap_active(void)
     return s_ap_up;
 }
 
+/* The station had no credentials when the radio came up for onboarding; go
+ * back to station-only before the APSTA-specific 10 s AP retry cap bites. */
+static void ap_stop(void)
+{
+    if (!s_ap_up) return;
+    s_ap_up = false;
+    if (s_ap_timer) esp_timer_stop(s_ap_timer);
+    if (!s_sta_configured) {
+        ESP_LOGW(TAG, "SoftAP %s idle for %d s — closed. No Wi-Fi stored yet: long-press BOOT "
+                      "to open it again", s_ap_ssid, ONBOARD_AP_TIMEOUT_S);
+    } else {
+        ESP_LOGI(TAG, "SoftAP %s closed — station only", s_ap_ssid);
+    }
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) ESP_LOGW(TAG, "SoftAP close failed: %s", esp_err_to_name(err));
+}
+
 static void ap_stop_cb(void *arg)
 {
     (void)arg;
-    if (!s_ap_up) return;
-    ESP_LOGI(TAG, "SoftAP %s idle for %d s — closed (the SET button brings it back)",
-             s_ap_ssid, ONBOARD_AP_TIMEOUT_S);
-    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (err != ESP_OK) ESP_LOGW(TAG, "SoftAP close failed: %s", esp_err_to_name(err));
-    s_ap_up = false;
+    ap_stop();
 }
 
 void app_mqtt_ap_start(void)
 {
-    if (s_wifi_started && s_ap_up) {
+    if (s_ap_up) {
         /* Already serving: just keep it awake. */
         if (s_ap_timer) {
             esp_timer_stop(s_ap_timer);
@@ -295,6 +321,8 @@ void app_mqtt_ap_start(void)
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
         ESP_ERROR_CHECK(esp_wifi_start());
         s_wifi_started = true;
+        /* Radio up, station still blank: a saved network is applied by
+         * mqtt_wifi_start() on the live interface. */
     } else {
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
@@ -353,22 +381,12 @@ esp_err_t app_mqtt_set_wifi(const char *ssid, const char *password)
     strlcpy(s_ssid, ssid, sizeof(s_ssid));
     strlcpy(s_pass, password, sizeof(s_pass));
     /* Credentials stored: the onboarding link has done its job. */
-    if (s_ap_up) {
-        esp_err_t ap_err = esp_wifi_set_mode(WIFI_MODE_STA);
-        if (ap_err != ESP_OK) ESP_LOGW(TAG, "SoftAP close failed: %s", esp_err_to_name(ap_err));
-        s_ap_up = false;
-        if (s_ap_timer) esp_timer_stop(s_ap_timer);
-    }
-    if (s_wifi_started) {
-        wifi_config_t wc = {};
-        strlcpy((char *)wc.sta.ssid, s_ssid, sizeof(wc.sta.ssid));
-        strlcpy((char *)wc.sta.password, s_pass, sizeof(wc.sta.password));
-        esp_wifi_set_config(WIFI_IF_STA, &wc);
-        esp_wifi_disconnect();
-        esp_wifi_connect();
-    } else {
-        mqtt_wifi_start();
-    }
+    if (s_ap_up) ap_stop();
+    /* Whether the radio was up (brought up by the SoftAP) or not, the station
+     * is configured — on the live interface — here, so a panel commissioned
+     * over its own access point actually joins the home network. */
+    s_sta_configured = false;
+    mqtt_wifi_start();
     return ESP_OK;
 }
 

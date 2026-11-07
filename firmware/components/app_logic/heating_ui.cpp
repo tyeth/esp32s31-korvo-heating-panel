@@ -82,8 +82,10 @@ static int64_t      s_reject_until = 0;
 static int64_t      s_last_activity = 0;
 static bool         s_dimmed = false;
 
-/* Touch: the display framework's pointer device, sampled once per tick. */
+/* Touch: the display framework's pointer device and the last press point. */
 static lv_indev_t *s_touch_indev = NULL;
+static int s_touch_x = -1;
+static int s_touch_y = -1;
 
 static uint32_t now_ms(void)
 {
@@ -143,13 +145,8 @@ void heating_voice_seconds_left(int seconds)
 /* ── touch input ─────────────────────────────────────────────────────── */
 
 static void touch_hit(int x, int y);
-static void sample_touch(void);
-
-static void touch_sample_timer_cb(lv_timer_t *t)
-{
-    (void)t;
-    if (s_ui_ready) sample_touch();
-}
+static void on_touch_press(lv_event_t *e);
+static void on_touch_release(lv_event_t *e);
 
 /**
  * Select-or-adjust on one tap — the spec's single active room: a tap inside a
@@ -443,32 +440,29 @@ static void listen_timer_cb(lv_timer_t *t)
  * controller — a second reader would deliver every tap twice and a selection
  * tap would turn into a setpoint change.
  *
- * Its coordinates are sampled once per tick and turned into the product's
- * select / −+ gesture on release. The framework's own press/release events are
- * deliberately unused (there is no public hook for them in this port).
+ * LVGL drains that device in its own read phase and leaves it in RELEASED, so
+ * its state cannot be sampled afterwards. The tap is therefore taken from
+ * LVGL's own press/release callbacks on the display, which fire inside that
+ * same read phase: a press records the point, a release is the tap. Registered
+ * on the display object so a touch that lands on our widgets (or anywhere
+ * else) is seen either way.
  */
-static void sample_touch(void)
+static void on_touch_press(lv_event_t *e)
 {
+    (void)e;
     if (s_touch_indev == NULL) return;
+    lv_point_t p;
+    lv_indev_get_point(s_touch_indev, &p);
+    if (p.x < 0 || p.y < 0) return;
+    s_touch_x = p.x;
+    s_touch_y = p.y;
+    touch_activity();
+}
 
-    static int last_x = -1, last_y = -1;
-    static bool was_pressed = false;
-
-    /* The display framework's input device is itself driven from this same
-     * LVGL task, so at any moment its state IS the panel's. */
-    bool pressed = (lv_indev_get_state(s_touch_indev) == LV_INDEV_STATE_PRESSED);
-    if (pressed) {
-        lv_point_t p;
-        lv_indev_get_point(s_touch_indev, &p);
-        if (p.x >= 0 && p.y >= 0) {
-            last_x = p.x;
-            last_y = p.y;
-            touch_activity();
-        }
-    } else if (was_pressed) {
-        touch_hit(last_x, last_y);       /* released: that is the tap */
-    }
-    was_pressed = pressed;
+static void on_touch_release(lv_event_t *e)
+{
+    (void)e;
+    touch_hit(s_touch_x, s_touch_y);       /* released: that is the tap */
 }
 
 esp_err_t heating_ui_init(void)
@@ -499,11 +493,13 @@ esp_err_t heating_ui_init(void)
     }
     if (s_touch_indev == NULL) {
         ESP_LOGW(TAG, "no touch input device — cards selectable, −/+ from voice only");
+    } else {
+        lv_obj_add_event_cb(s_screen, on_touch_press, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_screen, on_touch_release, LV_EVENT_RELEASED, NULL);
     }
 
     lv_timer_create(ui_timer_cb, 250, NULL);
     lv_timer_create(listen_timer_cb, 1000, NULL);
-    lv_timer_create(touch_sample_timer_cb, 50, NULL);
     s_ui_ready = true;
     lvgl_port_unlock();
 
@@ -516,4 +512,9 @@ void heating_ui_touch_activity(void)
 {
     touch_activity();
     s_refresh = true;
+}
+
+bool heating_ui_has_touch(void)
+{
+    return s_touch_indev != NULL;
 }

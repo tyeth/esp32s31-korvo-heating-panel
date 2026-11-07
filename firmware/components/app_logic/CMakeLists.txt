@@ -20,7 +20,7 @@ idf_component_register(
          "heating.cpp" "heating_voice.cpp" "heating_ui.cpp" "heating_web.cpp" "heating_mqtt.cpp"
     INCLUDE_DIRS "include"
     WHOLE_ARCHIVE
-    PRIV_REQUIRES app_driver app_config app_utils app_mqtt app_webui app_display app_console
+    PRIV_REQUIRES app_driver app_config app_utils app_mqtt app_webui app_display app_audio app_console
                   nvs_flash esp_timer espressif__button espressif__esp_board_manager
                   espressif__esp_lcd_touch espressif__esp-sr lvgl__lvgl espressif__esp_lvgl_port
                   esp_netif lwip console esp_hw_support spi_flash esp_psram esp_app_format

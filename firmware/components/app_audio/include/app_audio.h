@@ -17,6 +17,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/** Open the one-shot command window from a physical trigger (the front
+ *  button): the microphone records for 10 s and MultiNet runs on it, exactly
+ *  as it does after the wake word. */
+void app_audio_listen_once(void);
+
+/** Close that window now (a second press, or the 10 s timer). */
+void app_audio_listen_stop(void);
+
 esp_err_t app_audio_init(void);
 
 /**
