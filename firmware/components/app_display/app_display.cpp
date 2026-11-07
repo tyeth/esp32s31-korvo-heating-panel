@@ -105,9 +105,24 @@ static void display_setup_task(void *arg)
                     : LV_COLOR_FORMAT_RGB565;
             board_disp_cfg.flags.buff_dma = board_lcd_serial ? 1 : 0;
             board_disp_cfg.flags.swap_bytes = board_lcd_serial ? 1 : 0;
-            s_disp = lvgl_port_add_disp(&board_disp_cfg);
-            ESP_LOGI(TAG, "Panel 'display_lcd' from board 'esp32_s31_korvo_1': %s %dx%d",
-                     board_lcd_cfg->chip, board_lcd_cfg->lcd_width, board_lcd_cfg->lcd_height);
+            /* An RGB panel owns its frame buffer in the LCD peripheral and has
+             * no panel IO: handing it to the generic add-disp path trips its
+             * assert(io_handle != NULL) and aborts the whole chip. The port has
+             * a dedicated entry for it. */
+            const bool board_lcd_rgb =
+                strcmp(board_lcd_cfg->sub_type, ESP_BOARD_DEVICE_LCD_SUB_TYPE_RGB) == 0;
+            if (board_lcd_rgb) {
+                lvgl_port_display_rgb_cfg_t board_rgb_cfg = {};
+                board_rgb_cfg.flags.bb_mode = 0;
+                board_rgb_cfg.flags.avoid_tearing = 0;
+                s_disp = lvgl_port_add_disp_rgb(&board_disp_cfg, &board_rgb_cfg);
+            } else {
+                s_disp = lvgl_port_add_disp(&board_disp_cfg);
+            }
+            ESP_LOGI(TAG, "Panel 'display_lcd' from board 'esp32_s31_korvo_1': %s %s %dx%d%s",
+                     board_lcd_cfg->chip, board_lcd_cfg->sub_type,
+                     board_lcd_cfg->lcd_width, board_lcd_cfg->lcd_height,
+                     s_disp ? "" : " (not registered)");
         }
     }
 
