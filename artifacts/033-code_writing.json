@@ -1,0 +1,44 @@
+{
+  "agent": "code_writing",
+  "seq": 33,
+  "savedAt": "2026-11-07T17:34:25.490Z",
+  "report": {
+    "result": "pass",
+    "summary": "The build now boots end-to-end (audio, RGB dashboard, web, SoftAP, MQTT, console); also removed the SNTP-before-event-loop race that could reboot at boot and made the `heating set` console command parse decimals and refuse bad input instead of clamping silently. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The last build now boots all the way through: audio init (generic dot product), RGB panel via lvgl_port_add_disp_rgb, dashboard, web page, SoftAP, MQTT init, behaviours, app_logic and the console REPL all come up — the two boot-blocking faults are gone.",
+      "Two things the device log exposed are fixed at the root rather than papered over: (1) the SNTP client was initialised straight from zc_behaviors_init, i.e. before app_mqtt_init creates the default event loop — an ordering race whose failure hits an ESP_ERROR_CHECK and reboots the panel; it now starts on its own task that creates/attaches the loop safely (create-default is idempotent). (2) the bench 'heating' command could only parse whole degrees and silently clamped 35 -> 30, which reads to a tester as 'the command ignored me'; it now takes decimals, refuses text and out-of-range values, echoes the value actually published and states the panel's online state in the listing.",
+      "The SoftAP handshake failure in the emulator log (3 failed handshakes) is the emulator's own station client against the firmware AP, not a panel defect: the panel's AP is up with its DHCP server, and the run's own network has no broker to reach (Host unreachable), which is exactly why every setpoint was refused while offline."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_logic/diagnostics.cpp",
+      "firmware/components/app_logic/zc_behaviors.cpp",
+      "firmware/components/app_logic/app_logic.cpp",
+      "firmware/components/app_logic/heating.cpp",
+      "firmware/components/app_logic/include/heating.h"
+    ],
+    "build": "esp32s31 success — 0x2ccc10 (2935824 B) in a 0x380000 partition, 20% free; check_code clean on the three edited sources",
+    "findingsAddressed": [
+      {
+        "finding": "boot abort in lvgl_port_add_disp for the RGB panel (previous round, confirmed fixed in this build's log)",
+        "fix": "lvgl_port_add_disp_rgb() for rgb / rgb_3wire_spi panels — log now shows \"Panel 'display_lcd' … generic_rgb rgb 800x480\" followed by \"dashboard up (4 rooms)\""
+      },
+      {
+        "finding": "esp-dsp dot-product crash (earlier round, confirmed fixed: 'DSP dot product: generic kernel linked')",
+        "fix": "WHOLE_ARCHIVE app_dsp_shim"
+      },
+      {
+        "finding": "SNTP initialised before the default event loop exists (race with app_mqtt_init, failure would ESP_ERROR_CHECK-reboot)",
+        "fix": "SNTP started from its own task that calls esp_event_loop_create_default() itself (idempotent); TZ still applied at boot"
+      },
+      {
+        "finding": "console 'heating set' parsed only whole degrees and silently clamped out-of-range values",
+        "fix": "decimal input, text/out-of-range rejected with a message, published value echoed, online state printed in the listing"
+      }
+    ],
+    "openQuestions": [
+      "The one non-product abort candidate left is the MQTT TLS connect path against a real broker; the emulator run never reached a broker (Host unreachable), so the first hardware run with the household broker is where TLS + name-check-skip behaviour gets its real test."
+    ]
+  }
+}
