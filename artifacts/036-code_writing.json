@@ -1,0 +1,43 @@
+{
+  "agent": "code_writing",
+  "seq": 36,
+  "savedAt": "2026-11-07T18:07:54.677Z",
+  "report": {
+    "result": "pass",
+    "summary": "Fixed the hardware panic: the dashboard no longer calls app_display_init() a second time (two setup tasks fighting one LVGL port) — it waits on app_display_ready() and then draws; also wired the spec's wake sources into the screen-dim logic. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The panic is the structural bug I had flagged as a risk two rounds ago: app_display_init() starts the display in its own task, and heating_ui_init() called it AGAIN, so two setup tasks drove one LVGL port — the log shows 'LVGL: Stopped LVGL task' immediately after the second add, then the assert. The double 'Display setup started' / 'Display initialized' pairs in every log so far were the same fault.",
+      "Fixed at the owner, not by reordering callers: app_display now publishes app_display_ready()/app_display_failed() and turns a second app_display_init() into a warning. heating_ui_init() waits for ready (30 s bound) instead of sleeping 1.5 s and racing — a fixed sleep is exactly what lost this race on hardware while passing on the emulator.",
+      "Went through the rest of the boot log for genuine product issues: the remaining errors are board/environment (no SD card, the camera probe falling back from SC101IOT to OV3660, an emulator RF-calibration miss) and not firmware faults. The one product-visible gap was the spec's wake sources for the screen dim (touch/button/wake word/MQTT), which existed for touch only; heating_ui_poke() now marks a heard command, a wake word, a setpoint, an MQTT state message and a link change as activity."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_display/app_display.cpp",
+      "firmware/components/app_display/include/app_display.h",
+      "firmware/components/app_logic/heating_ui.cpp",
+      "firmware/components/app_logic/app_logic.cpp",
+      "firmware/components/app_logic/heating.cpp",
+      "firmware/components/app_logic/include/heating.h",
+      "firmware/components/app_audio/app_audio.cpp"
+    ],
+    "build": "esp32s31 success — 0x2ccf40 (2936640 B) in a 0x380000 partition, 20% free; check_code clean on the five edited sources",
+    "findingsAddressed": [
+      {
+        "finding": "panic (assert) during the second display bring-up on hardware",
+        "fix": "single display init: app_display refuses the second call; the dashboard waits on app_display_ready()/app_display_failed() (bounded 30 s) and then draws under the LVGL lock"
+      },
+      {
+        "finding": "screen dim ignored the spec's wake sources other than touch",
+        "fix": "heating_ui_poke() on a heard command, a wake word, a setpoint, an MQTT state message and a broker transition"
+      },
+      {
+        "finding": "status strip's 'no panel' colour only appeared when Wi-Fi was stored",
+        "fix": "the touchless → dim red state no longer depends on Wi-Fi"
+      }
+    ],
+    "openQuestions": [
+      "The remaining boot-log errors are environment/board (SD card absent, camera sensor probe fallback to OV3660, emulator RF calibration); nothing points at the firmware.",
+      "Whether the RGB panel's buffers (800x480, 40-line double buffer, no bounce buffer) are right in practice still needs a real screen."
+    ]
+  }
+}
