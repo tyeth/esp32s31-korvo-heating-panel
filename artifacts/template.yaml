@@ -1,12 +1,88 @@
-# The product composition — which code blocks this firmware is made of.
-#
-# chip: esp32s31
-# frameworks: [audio, display, webui, mqtt]
-#
-# Start from a catalog product (list_templates, then get_template with
-# format:'yaml'), paste it here, and edit — or author from scratch. Then
-# call apply_template with no arguments: it reads this file, validates it,
-# and generates the firmware tree. Every write/edit of this file is
-# validated immediately; findings come back in the tool result.
-#
-# The hardware is NOT declared here — it lives in artifacts/board.yaml.
+id: korvo-heating-panel
+name: Korvo-1 Voice Heating Panel
+description: >-
+  Zigbee2MQTT heating panel on the ESP32-S31-Korvo-1 — four room cards on the
+  on-board LCD, setpoints published straight to each TRV's state topic, one-shot
+  voice commands via the on-board codec mic.
+
+frameworks: [audio, display, webui, mqtt]
+ci_chips: [esp32s31]
+
+partition_table: 8mb-voice
+
+instances:
+  # Board hardware (no pins here — the board definition owns them).
+  - block: drivers/board_audio_codec
+    prefix: CODEC
+    cfg:
+      device: audio_dac
+      tone_param: APP_DRIVER_PARAM_TONE_HZ
+      volume_param: APP_DRIVER_PARAM_VOLUME
+      mute_param: APP_DRIVER_PARAM_MUTE
+
+  - block: drivers/voice_mic_i2s
+    prefix: VMIC
+    cfg:
+      port: 1
+      bclk_gpio: 4
+      ws_gpio: 5
+      din_gpio: 6
+      slot_right: 0
+
+  - block: drivers/board_led_strip
+    prefix: STATUS
+    cfg:
+      device: led_strip
+      red: 255
+      green: 255
+      blue: 255
+      param_id: APP_DRIVER_PARAM_POWER
+      hue_param: APP_DRIVER_PARAM_HUE
+      saturation_param: APP_DRIVER_PARAM_SATURATION
+      brightness_param: APP_DRIVER_PARAM_BRIGHTNESS
+
+  - block: drivers/board_button
+    prefix: SET_BTN
+    cfg:
+      device: adc_button_group
+      long_press_ms: 2000
+
+  - block: drivers/board_button
+    prefix: BOOT_BTN
+    cfg:
+      device: boot_button
+      long_press_ms: 2000
+
+  # Behaviors
+  - block: behaviors/sntp_time
+    prefix: CLOCK
+    cfg:
+      tz: "GMT0BST,M3.5.0/1,M10.5.0"
+      ntp_server: pool.ntp.org
+
+  - block: behaviors/console_uptime
+    prefix: CON_UPTIME
+    cfg: {}
+  - block: behaviors/console_chip_info
+    prefix: CON_CHIP
+    cfg: {}
+  - block: behaviors/console_version
+    prefix: CON_VER
+    cfg: {}
+  - block: behaviors/console_log_level
+    prefix: CON_LOG
+    cfg: {}
+  - block: behaviors/console_heap_stats
+    prefix: CON_HEAP
+    cfg: {}
+  - block: behaviors/boot_reason_logger
+    prefix: BOOT_REASON
+    cfg: {}
+  - block: behaviors/boot_count
+    prefix: BOOT_CNT
+    cfg:
+      nvs_namespace: app
+      nvs_key: bootcount
+  - block: behaviors/task_watchdog
+    prefix: WDT
+    cfg: {}
