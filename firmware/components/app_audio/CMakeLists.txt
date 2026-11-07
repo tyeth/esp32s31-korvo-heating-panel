@@ -8,4 +8,5 @@ idf_component_register(
     SRCS "app_audio.cpp"
     INCLUDE_DIRS "include"
     PRIV_REQUIRES espressif__esp-sr app_driver app_config esp_driver_i2s
+    PRIV_REQUIRES esp_driver_i2s
 )

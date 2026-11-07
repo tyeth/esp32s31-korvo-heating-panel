@@ -30,9 +30,9 @@
 
 #include "app_display.h"
 
-#include "app_mqtt.h"
-
 #include "app_webui.h"
+
+#include "app_mqtt.h"
 #include "app_logic.h"
 #include "app_console.h"
 
@@ -71,9 +71,9 @@ extern "C" void app_main(void)
 
     ESP_ERROR_CHECK(app_display_init());
 
-    ESP_ERROR_CHECK(app_mqtt_init());
-
     ESP_ERROR_CHECK(app_webui_init());
+
+    ESP_ERROR_CHECK(app_mqtt_init());
 
     /* Composed behaviors (generated, zc_behaviors.cpp) — before the product's
      * own logic, so it can rely on persistence, console, diagnostics being up */

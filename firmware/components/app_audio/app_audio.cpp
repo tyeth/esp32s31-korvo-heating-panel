@@ -14,7 +14,7 @@
 #include <esp_mn_models.h>
 #include <esp_mn_speech_commands.h>
 #include <model_path.h>
-
+#include <driver/i2s_std.h>
 
 static const char *TAG = "app_audio";
 
@@ -26,7 +26,46 @@ static esp_afe_sr_data_t *s_afe_data = NULL;
 static const esp_mn_iface_t *s_mn = NULL;
 static model_iface_data_t *s_mn_data = NULL;
 
+/* vmic: I2S voice capture — raw PCM source for the AFE feed task. */
 
+static i2s_chan_handle_t s_vmic_vmic_rx = NULL;
+
+/* Scratch for the 32->16 bit narrowing. Sized at AFE's feed chunk, which is
+ * queried at runtime; 1024 frames is comfortably above it for 16 kHz mono. */
+#define VMIC_VMIC_MAX_CHUNK 1024
+static int32_t s_vmic_vmic_raw[VMIC_VMIC_MAX_CHUNK];
+
+/* Fixed-name contract declared in app_audio.h — see this block's block.yml.
+ * Blocking read; returns the sample count actually produced. */
+size_t zc_audio_mic_read(int16_t *dest, size_t samples)
+{
+    if (!s_vmic_vmic_rx || dest == NULL) return 0;
+
+    size_t done = 0;
+    while (done < samples) {
+        size_t want = samples - done;
+        if (want > VMIC_VMIC_MAX_CHUNK) want = VMIC_VMIC_MAX_CHUNK;
+
+        size_t bytes_read = 0;
+        esp_err_t err = i2s_channel_read(s_vmic_vmic_rx, s_vmic_vmic_raw,
+                                         want * sizeof(int32_t), &bytes_read,
+                                         portMAX_DELAY);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "vmic: I2S read failed: %s", esp_err_to_name(err));
+            return done;
+        }
+
+        size_t got = bytes_read / sizeof(int32_t);
+        /* 24-bit parts left-justify into the 32-bit slot: the top 16 bits are
+         * the usable signal for both 24- and 32-bit mics. */
+        for (size_t i = 0; i < got; i++) {
+            dest[done + i] = (int16_t)(s_vmic_vmic_raw[i] >> 16);
+        }
+        done += got;
+        if (got == 0) break;
+    }
+    return done;
+}
 
 /* Recognized phrase -> hardware. Device types own the cases. */
 static void audio_apply_command(int phrase_id)
@@ -64,14 +103,6 @@ static void audio_driver_cb(
     (void)source;
     (void)ctx;
 
-}
-
-/* Silence until a microphone block provides the real zc_audio_mic_read. */
-__attribute__((weak)) size_t zc_audio_mic_read(int16_t *dest, size_t samples)
-{
-    (void)dest;
-    (void)samples;
-    return 0;
 }
 
 static void audio_feed_task(void *arg)
@@ -139,7 +170,37 @@ esp_err_t app_audio_init(void)
     s_handle = app_driver_register_solution("audio", audio_driver_cb, NULL);
 
     /* Capture hardware first — AFE has nothing to read without it. */
+    {
+        /* ESP-IDF 6 deleted the i2s_port_t enum; i2s_chan_config_t.id is a plain
+           int now, so the cast is both unnecessary and a hard compile error. */
+        i2s_chan_config_t vmic_chan_cfg =
+            I2S_CHANNEL_DEFAULT_CONFIG(VMIC_VMIC_PORT, I2S_ROLE_MASTER);
+        ESP_ERROR_CHECK(i2s_new_channel(&vmic_chan_cfg, NULL, &s_vmic_vmic_rx));
 
+        i2s_std_config_t vmic_std_cfg = {
+            .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(VMIC_VMIC_SAMPLE_RATE),
+            .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+                I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
+            .gpio_cfg = {
+                .mclk = I2S_GPIO_UNUSED,
+                .bclk = (gpio_num_t)VMIC_VMIC_BCLK_GPIO,
+                .ws   = (gpio_num_t)VMIC_VMIC_WS_GPIO,
+                .dout = I2S_GPIO_UNUSED,
+                .din  = (gpio_num_t)VMIC_VMIC_DIN_GPIO,
+                .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
+            },
+        };
+        vmic_std_cfg.slot_cfg.slot_mask =
+            VMIC_VMIC_SLOT_RIGHT ? I2S_STD_SLOT_RIGHT : I2S_STD_SLOT_LEFT;
+
+        ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_vmic_vmic_rx, &vmic_std_cfg));
+        ESP_ERROR_CHECK(i2s_channel_enable(s_vmic_vmic_rx));
+
+        ESP_LOGI(TAG, "Voice mic vmic: I2S%d BCLK=%d WS=%d DIN=%d @%d Hz, %s slot",
+                 VMIC_VMIC_PORT, VMIC_VMIC_BCLK_GPIO, VMIC_VMIC_WS_GPIO,
+                 VMIC_VMIC_DIN_GPIO, VMIC_VMIC_SAMPLE_RATE,
+                 VMIC_VMIC_SLOT_RIGHT ? "right" : "left");
+    }
 
     /* Models live in the `model` partition; see the 8mb-voice table. A build
      * with no model partition reaches here and fails, which is the intended

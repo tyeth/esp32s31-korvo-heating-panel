@@ -7,11 +7,13 @@
 static const char *TAG = "zc_behaviors";
 
 /* Each concern lives in its own translation unit — declared here, run below. */
+void control_logic_init(void);
 void diagnostics_logic_init(void);
 void console_logic_init(void);
 
 esp_err_t zc_behaviors_init(void)
 {
+    control_logic_init();
     diagnostics_logic_init();
     console_logic_init();
 

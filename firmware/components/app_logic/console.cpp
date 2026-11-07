@@ -2,9 +2,17 @@
 #include "app_driver.h"
 #include "app_config.h"
 #include <esp_log.h>
-#include <esp_timer.h>
-#include <esp_heap_caps.h>
+#include "esp_board_manager.h"
+#include "dev_button.h"
+#include <iot_button.h>
+#include <nvs_flash.h>
+#include <esp_system.h>
+#include <time.h>
+#include <stdlib.h>
+#include <esp_netif_sntp.h>
+#include <esp_sntp.h>
 #include <esp_console.h>
+#include <esp_timer.h>
 #include <inttypes.h>
 #include <ctype.h>
 #include <esp_chip_info.h>
@@ -17,12 +25,11 @@
 #include <esp_log.h>
 #include <string.h>
 #include <strings.h>
-#include <nvs_flash.h>
+#include <esp_heap_caps.h>
 #include <nvs.h>
-#include <esp_system.h>
 
-/* behaviors/console_uptime (CONSOLE_UPTIME) */
-static int console_uptime_cmd(int argc, char **argv)
+/* behaviors/console_uptime (CON_UPTIME) */
+static int con_uptime_cmd(int argc, char **argv)
 {
     uint64_t us = esp_timer_get_time();
     uint64_t s  = us / 1000000ULL;
@@ -37,19 +44,19 @@ static int console_uptime_cmd(int argc, char **argv)
     return 0;
 }
 
-static void zc_console_uptime_init(void)
+static void zc_con_uptime_init(void)
 {
     /* Zero-init + assign: newer IDF adds fields to esp_console_cmd_t and the
      * build runs with -Werror=missing-field-initializers. */
-    esp_console_cmd_t console_uptime_c = {};
-    console_uptime_c.command = "uptime";
-    console_uptime_c.help = "Seconds since boot";
-    console_uptime_c.func = &console_uptime_cmd;
-    esp_console_cmd_register(&console_uptime_c);
+    esp_console_cmd_t con_uptime_c = {};
+    con_uptime_c.command = "uptime";
+    con_uptime_c.help = "Seconds since boot";
+    con_uptime_c.func = &con_uptime_cmd;
+    esp_console_cmd_register(&con_uptime_c);
 }
 
-/* behaviors/console_chip_info (CONSOLE_CHIP_INFO) */
-static int console_chip_info_cmd(int argc, char **argv)
+/* behaviors/console_chip_info (CON_CHIP) */
+static int con_chip_cmd(int argc, char **argv)
 {
     esp_chip_info_t info = {};
     esp_chip_info(&info);
@@ -99,19 +106,19 @@ static int console_chip_info_cmd(int argc, char **argv)
     return 0;
 }
 
-static void zc_console_chip_info_init(void)
+static void zc_con_chip_init(void)
 {
     /* Zero-init + assign: newer IDF adds fields to esp_console_cmd_t and the
      * build runs with -Werror=missing-field-initializers. */
-    esp_console_cmd_t console_chip_info_c = {};
-    console_chip_info_c.command = "chip";
-    console_chip_info_c.help = "Chip model, revision, features, MAC";
-    console_chip_info_c.func = &console_chip_info_cmd;
-    esp_console_cmd_register(&console_chip_info_c);
+    esp_console_cmd_t con_chip_c = {};
+    con_chip_c.command = "chip";
+    con_chip_c.help = "Chip model, revision, features, MAC";
+    con_chip_c.func = &con_chip_cmd;
+    esp_console_cmd_register(&con_chip_c);
 }
 
-/* behaviors/console_version (CONSOLE_VERSION) */
-static int console_version_cmd(int argc, char **argv)
+/* behaviors/console_version (CON_VER) */
+static int con_ver_cmd(int argc, char **argv)
 {
     const esp_app_desc_t *desc = esp_app_get_description();
     printf("firmware:    %s\n", desc ? desc->project_name : "(unknown)");
@@ -121,19 +128,19 @@ static int console_version_cmd(int argc, char **argv)
     return 0;
 }
 
-static void zc_console_version_init(void)
+static void zc_con_ver_init(void)
 {
     /* Zero-init + assign: newer IDF adds fields to esp_console_cmd_t and the
      * build runs with -Werror=missing-field-initializers. */
-    esp_console_cmd_t console_version_c = {};
-    console_version_c.command = "version";
-    console_version_c.help = "Firmware + IDF version";
-    console_version_c.func = &console_version_cmd;
-    esp_console_cmd_register(&console_version_c);
+    esp_console_cmd_t con_ver_c = {};
+    con_ver_c.command = "version";
+    con_ver_c.help = "Firmware + IDF version";
+    con_ver_c.func = &con_ver_cmd;
+    esp_console_cmd_register(&con_ver_c);
 }
 
-/* behaviors/console_log_level (CONSOLE_LOG_LEVEL) */
-static int console_log_level_cmd(int argc, char **argv)
+/* behaviors/console_log_level (CON_LOG) */
+static int con_log_cmd(int argc, char **argv)
 {
     if (argc != 3) {
         printf("usage: log <tag|*> <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>\n");
@@ -152,20 +159,20 @@ static int console_log_level_cmd(int argc, char **argv)
     return 0;
 }
 
-static void zc_console_log_level_init(void)
+static void zc_con_log_init(void)
 {
     /* Zero-init + assign: newer IDF adds fields to esp_console_cmd_t and the
      * build runs with -Werror=missing-field-initializers. */
-    esp_console_cmd_t console_log_level_c = {};
-    console_log_level_c.command = "log";
-    console_log_level_c.help = "Set runtime log level for a tag";
-    console_log_level_c.hint = "<tag|*> <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>";
-    console_log_level_c.func = &console_log_level_cmd;
-    esp_console_cmd_register(&console_log_level_c);
+    esp_console_cmd_t con_log_c = {};
+    con_log_c.command = "log";
+    con_log_c.help = "Set runtime log level for a tag";
+    con_log_c.hint = "<tag|*> <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>";
+    con_log_c.func = &con_log_cmd;
+    esp_console_cmd_register(&con_log_c);
 }
 
-/* behaviors/console_heap_stats (CONSOLE_HEAP_STATS) */
-static int console_heap_stats_cmd(int argc, char **argv)
+/* behaviors/console_heap_stats (CON_HEAP) */
+static int con_heap_cmd(int argc, char **argv)
 {
     const struct { uint32_t caps; const char *name; } regions[] = {
         { MALLOC_CAP_8BIT,    "8BIT (general)" },
@@ -190,22 +197,22 @@ static int console_heap_stats_cmd(int argc, char **argv)
     return 0;
 }
 
-static void zc_console_heap_stats_init(void)
+static void zc_con_heap_init(void)
 {
     /* Zero-init + assign: newer IDF adds fields to esp_console_cmd_t and the
      * build runs with -Werror=missing-field-initializers. */
-    esp_console_cmd_t console_heap_stats_c = {};
-    console_heap_stats_c.command = "heap";
-    console_heap_stats_c.help = "Detailed heap stats per region";
-    console_heap_stats_c.func = &console_heap_stats_cmd;
-    esp_console_cmd_register(&console_heap_stats_c);
+    esp_console_cmd_t con_heap_c = {};
+    con_heap_c.command = "heap";
+    con_heap_c.help = "Detailed heap stats per region";
+    con_heap_c.func = &con_heap_cmd;
+    esp_console_cmd_register(&con_heap_c);
 }
 
 void console_logic_init(void)
 {
-    zc_console_uptime_init();
-    zc_console_chip_info_init();
-    zc_console_version_init();
-    zc_console_log_level_init();
-    zc_console_heap_stats_init();
+    zc_con_uptime_init();
+    zc_con_chip_init();
+    zc_con_ver_init();
+    zc_con_log_init();
+    zc_con_heap_init();
 }

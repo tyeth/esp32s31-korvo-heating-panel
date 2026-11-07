@@ -7,6 +7,13 @@
 
 typedef enum {
     APP_DRIVER_PARAM_NONE = 0,  /* sentinel */
+    APP_DRIVER_PARAM_TONE_HZ,  /* uint32_t (union member: .u32) */
+    APP_DRIVER_PARAM_VOLUME,  /* uint8_t (union member: .u8) */
+    APP_DRIVER_PARAM_MUTE,  /* bool: on/off (union member: .b) */
+    APP_DRIVER_PARAM_POWER,  /* bool: on/off (union member: .b) */
+    APP_DRIVER_PARAM_HUE,  /* uint8_t (union member: .u8) */
+    APP_DRIVER_PARAM_SATURATION,  /* uint8_t (union member: .u8) */
+    APP_DRIVER_PARAM_BRIGHTNESS,  /* uint8_t (union member: .u8) */
     APP_DRIVER_PARAM_MAX
 } app_driver_param_id_t;
 
@@ -18,7 +25,7 @@ typedef union {
     uint32_t u32;
 } app_driver_param_val_t;
 
-#define APP_DRIVER_MAX_SOLUTIONS 8  /* registrants in this composition + headroom */
+#define APP_DRIVER_MAX_SOLUTIONS 9  /* registrants in this composition + headroom */
 typedef uint8_t app_driver_handle_t;
 #define APP_DRIVER_SOURCE_LOCAL 0
 

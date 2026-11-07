@@ -16,10 +16,10 @@
 # already satisfies the reference — so the override links cleanly and silently
 # does nothing. Whole-archive links every file the product put here.
 idf_component_register(
-    SRCS "app_logic.cpp" "diagnostics.cpp" "console.cpp" "zc_behaviors.cpp"
+    SRCS "app_logic.cpp" "button_registry.cpp" "control.cpp" "diagnostics.cpp" "console.cpp" "zc_behaviors.cpp"
     INCLUDE_DIRS "include"
     WHOLE_ARCHIVE
-    PRIV_REQUIRES app_driver app_config app_utils nvs_flash esp_timer espressif__button console esp_hw_support spi_flash esp_psram esp_app_format
+    PRIV_REQUIRES app_driver app_config app_utils nvs_flash esp_timer espressif__button espressif__esp_board_manager esp_netif lwip console esp_hw_support spi_flash esp_psram esp_app_format
                   driver esp_driver_gpio esp_driver_ledc esp_driver_i2s esp_driver_spi
                   esp_driver_pcnt esp_driver_rmt esp_driver_uart esp_driver_gptimer
 )

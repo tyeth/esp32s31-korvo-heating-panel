@@ -11,7 +11,7 @@
 idf_component_register(
     SRCS "app_driver.cpp" "app_driver_cb.cpp"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES app_config app_utils driver nvs_flash esp_timer espressif__button
+    PRIV_REQUIRES app_config app_utils driver nvs_flash esp_timer espressif__button espressif__esp_board_manager espressif__esp_codec_dev
                   esp_driver_gpio esp_driver_ledc esp_driver_i2s esp_driver_spi
                   esp_driver_pcnt esp_driver_rmt esp_driver_uart esp_driver_gptimer
 )
