@@ -241,26 +241,20 @@ static void wifi_retry_cb(void *arg)
     esp_wifi_connect();
 }
 
-/* Connecting from the sys_evt task, as the framework's own example does: it is
- * the documented place to act on STA_START. The stack of that task is sized by
- * CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE (raised in sdkconfig.defaults); the
- * log-based work (disconnect, got-IP) runs on a task of ours instead. */
-static void wifi_connect_cb(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
-{
-    (void)arg; (void)base; (void)event_id; (void)event_data;
-    esp_wifi_connect();
-}
-
 /* ── Wi-Fi/IP work, off the default event loop ────────────────────────
  *
- * The event handlers only wake s_net_task; the handler itself never logs,
- * creates timers or starts a client. A configured panel that overran the event
- * task's stack died with "A stack overflow in task sys_evt" on the Wi-Fi event
- * right after MQTT init — work of ours on that task, not something the task is
- * sized for.
+ * The handlers only wake s_net_task; there is no code of ours that runs
+ * in-line on the framework's shared 'sys_evt' task — not even the connect.
+ *
+ * That task overflows on a configured boot, and the extra stack it holds is
+ * taken from internal DRAM at WiFi init. So the system event task is made small
+ * (CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE, sdkconfig.defaults) and all of our
+ * handling — the connect, the disconnect log + retry, the broker start — runs
+ * here on this task, which has its own stack.
  */
 #define NET_EV_DISCONNECTED 0x01
 #define NET_EV_GOT_IP       0x02
+#define NET_EV_START        0x04
 
 static TaskHandle_t s_net_task = NULL;
 static esp_timer_handle_t s_net_debounce = NULL;
@@ -272,6 +266,11 @@ static void net_task(void *arg)
     for (;;) {
         uint32_t bits = 0;
         if (xTaskNotifyWait(0, 0xFFFFFFFF, &bits, portMAX_DELAY) != pdTRUE) continue;
+
+        if (bits & NET_EV_START) {
+            /* The station interface is up: join. */
+            esp_wifi_connect();
+        }
 
         if (bits & NET_EV_DISCONNECTED) {
             ESP_LOGW(TAG, "Wi-Fi disconnected — retrying in %d s", RETRY_BACKOFF_S);
@@ -322,7 +321,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t event_i
 {
     (void)arg; (void)event_data;
     if (s_net_task == NULL) return;
-    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        xTaskNotify(s_net_task, NET_EV_START, eSetBits);
+    } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         xTaskNotify(s_net_task, NET_EV_DISCONNECTED, eSetBits);
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xTaskNotify(s_net_task, NET_EV_GOT_IP, eSetBits);
@@ -737,9 +738,6 @@ esp_err_t app_mqtt_init(void)
     }
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL));
-    /* STA_START is the one event answered in place: esp_wifi_connect() is what
-     * the framework documents for it, and it returns immediately. */
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_START, wifi_connect_cb, NULL));
 
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);

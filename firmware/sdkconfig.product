@@ -1,0 +1,13 @@
+# Overrides that must win over the board definition's own defaults
+# (gen_bmgr_codes/board_manager.defaults). The board manager reports that its
+# file has higher priority than the project sdkconfig.defaults, so this is the
+# slot for a value the product has to change on top of the board.
+
+# The framework's default event-loop task ("sys_evt") dispatches the Wi-Fi and IP
+# events. On this panel it overflows its default 2304-byte stack on the first
+# configured boot (stored Wi-Fi credentials -> esp_wifi_start -> the MAC/netif
+# handlers), which killed a commissioned unit after every power cycle. Nothing of
+# ours runs in-line on that task any more (app_mqtt's handlers only notify the
+# product's own "mqtt_net" task), so this is the stack the framework's own
+# dispatch needs.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096

@@ -67,13 +67,10 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
 
-# The default event loop (the FreeRTOS 'sys_evt' task) runs the Wi-Fi/IP stack's
-# handlers and the framework's own mdns/httpd notifications. On a configured
-# panel that reaches the broker it was observed to overflow its default stack on
-# the Wi-Fi events that follow MQTT init; the product's own work now runs on its
-# own task (see app_mqtt's net_task), and this gives the remaining stack the
-# headroom a Wi-Fi + TLS + httpd + mdns panel needs.
-CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+# The framework's default event-loop task ("sys_evt") dispatches the Wi-Fi/IP
+# events and was observed to overflow its stack on a configured boot. The value
+# is set in sdkconfig.product, the slot that overrides the board definition's own
+# defaults (the board manager reports its file has higher priority).
 
 # The board definition (gen_bmgr_codes/board_manager.defaults) enables the DVP
 # camera video device; esp_video also enables the USB-UVC video device on this
