@@ -1,6 +1,6 @@
 {
   "writer": "product_description",
-  "updatedAt": "2026-11-07T14:40:12.225Z",
+  "updatedAt": "2026-11-07T14:40:17.379Z",
   "spec": {
     "meta": {
       "name": "ESP32-S31 Korvo Board voice HA controller",
@@ -95,6 +95,24 @@
       {
         "id": "f14",
         "text": "TRVs stay in heat mode at optimistic setpoints (the boiler is not remote-controlled yet); the device works at that level and never claims to control the boiler",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f15",
+        "text": "Reading topics: each room's TRV state comes from zigbee2mqtt/<trv>/ (current_heating_setpoint, local_temperature, running_state); the room air sensor from zigbee2mqtt/<sensor>/temperature — all topic names set on the web page",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f16",
+        "text": "If a TRV reports running_state=off (frost mode) the room shows \"valve off\" and the next setpoint command also turns it back to heat",
+        "status": "draft",
+        "source": "ai"
+      },
+      {
+        "id": "f17",
+        "text": "Anti-mistake guard — a spoken or touched target is only published when it differs from the last one sent; a repeat of the same command within 30 s is ignored and the screen says \"already set\"",
         "status": "draft",
         "source": "ai"
       }
