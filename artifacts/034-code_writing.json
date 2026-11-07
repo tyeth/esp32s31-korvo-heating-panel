@@ -1,0 +1,28 @@
+{
+  "agent": "code_writing",
+  "seq": 34,
+  "savedAt": "2026-11-07T17:43:18.380Z",
+  "report": {
+    "result": "pass",
+    "summary": "A bare panel now joins free4all (password 'password') by default, same rule as the broker default — stored settings always override, and boot never depends on that network being present. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "Applied the Wi-Fi default in the same place and with the same rule as the broker default: only when nothing is stored (fresh flash or after a factory reset), so a network saved from /settings or `mqtt-wifi` always wins. This keeps the panel's commissioning story intact while making a bare unit join free4all on its own.",
+      "With Wi-Fi now present by default, app_mqtt_wifi_missing() is false on a fresh panel, so the onboarding SoftAP is not started at boot — a BOOT long press still opens it, and a factory reset brings the default network back rather than leaving the board unreachable."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cccb0 (2935984 B) in a 0x380000 partition, 20% free; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "user request — Wi-Fi defaults 'free4all' / 'password'",
+        "fix": "HEATING_DEFAULT_WIFI_SSID/PASS applied in mqtt_load_config() when no SSID is stored, logged as \"no Wi-Fi saved — default 'free4all'\" so the boot log shows which network was dialled"
+      }
+    ],
+    "openQuestions": [
+      "The credentials are compiled into the image (as requested) and therefore present in any build shipped from this tree; the settings page or `mqtt-wifi` replaces them without a rebuild.",
+      "If 'free4all' is out of range at boot the panel stays on the dashboard and retries every 30 s; a BOOT long press opens the onboarding AP for a different network."
+    ]
+  }
+}
