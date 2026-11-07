@@ -1,0 +1,39 @@
+{
+  "agent": "code_writing",
+  "seq": 24,
+  "savedAt": "2026-11-07T16:53:43.575Z",
+  "report": {
+    "result": "pass",
+    "summary": "The generic dot product is now actually linked (WHOLE_ARCHIVE + a real reference, verified in the link map: dsps_dotprod_f32_arp4 comes from libapp_dsp_shim.a, not esp-dsp's faulting assembly), so voice init should no longer abort the boot. Builds at 2.93 MB, 20 % free.",
+    "decisions": [
+      "The reviewer was right that my previous fix never took effect, and the root cause is my incorrect mental model, not the shim's code: a static archive member is only pulled in for a symbol still unresolved when the linker reaches that archive, and esp-sr's prebuilt reference is satisfied by esp-dsp's own archive first. Declaring PRIV_REQUIRES does not link anything.",
+      "Fixed by making the definition unconditional and the dependency real: the shim component is registered WHOLE_ARCHIVE (its object goes into the image whatever the archive order), and app_audio.cpp includes app_dsp_shim.h and logs app_dsp_dotprod_kernel() — a real reference plus a boot-visible marker so a future link change cannot silently bring the faulting assembly back.",
+      "Verified in the link map before claiming success: dsps_dotprod_f32_arp4 resolves to libapp_dsp_shim.a(dsps_dotprod_arp4.c.obj) and there is no dsps_dotprod_f32_arp4.S.obj entry any more.",
+      "The shim's body is byte-for-byte esp-dsp's ANSI kernel (acc += src1[i]*src2[i]); I did not port the assembly's alignment split, because the ANSI implementation the reviewer points to is exactly this loop — same arithmetic on every path.",
+      "Did not attempt any FFT substitution: this round's failure is the same symbol as last round, so the diagnosis is a link problem, not a claim about other esp-dsp kernels."
+    ],
+    "filesCreated": [
+      "firmware/components/app_dsp_shim/include/app_dsp_shim.h"
+    ],
+    "filesModified": [
+      "firmware/components/app_dsp_shim/CMakeLists.txt",
+      "firmware/components/app_dsp_shim/dsps_dotprod_arp4.c",
+      "firmware/components/app_audio/CMakeLists.txt",
+      "firmware/components/app_audio/app_audio.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cc760 (2934624 B) in a 0x380000 partition, 20% free; check_code clean; map confirms the symbol now links from libapp_dsp_shim.a",
+    "findingsAddressed": [
+      {
+        "finding": "critical — app_dsp_shim is never linked, so the image still faults in esp-dsp's dsps_dotprod_f32_arp4 assembly",
+        "fix": "WHOLE_ARCHIVE registration plus a real reference (app_dsp_dotprod_kernel() called from app_audio_init); map shows dsps_dotprod_f32_arp4 -> libapp_dsp_shim.a and no esp-dsp .S.obj"
+      },
+      {
+        "finding": "info — the shim's arithmetic differs from esp-dsp's C implementation",
+        "fix": "the shim is esp-dsp's ANSI loop verbatim (acc += src1[i]*src2[i]); that is the same body named in the review, so no alignment-split variant is missing"
+      }
+    ],
+    "openQuestions": [
+      "Whether esp-dsp's other hardware-loop kernels (FFT used by the mel front end, FIR, biquad, matrix) also fault on this target cannot be checked without a further functional run; the dot product was the only fault in the log."
+    ]
+  }
+}
