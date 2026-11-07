@@ -43,8 +43,10 @@ static char s_user[33] = {0};
 static char s_mqtt_pass[65] = {0};
 /* Optional root CA for the broker's chain (PEM); empty = the built-in pack.
  * Set from the settings page; kept so a household that pastes its own CA
- * keeps chain authentication even though the name check is skipped. */
-static char *s_ca_pem = NULL;
+ * keeps chain authentication even though the name check is skipped. Always a
+ * valid string once s_ca_buf exists — never a NULL to dereference. */
+static char  s_ca_buf[4096] = {0};
+static char *s_ca_pem = s_ca_buf;
 
 /* The product's own data handler (app_mqtt_set_data_handler). */
 static void (*s_data_handler)(const char *topic, int topic_len,
@@ -197,7 +199,7 @@ static void mqtt_start_client(void)
      * certificate is still refused (a wrong-hostname check is not simply off). */
     if (mqtt_uri_is_tls(s_uri)) {
         cfg.broker.verification.skip_cert_common_name_check = true;
-        if (s_ca_pem[0]) {
+        if (s_ca_pem != NULL && s_ca_pem[0] != 0) {
             cfg.broker.verification.certificate = s_ca_pem;
         }
     }
@@ -401,8 +403,9 @@ static void mqtt_load_config(void)
     n = sizeof(s_user);      nvs_get_str(h, "user", s_user, &n);
     n = sizeof(s_mqtt_pass); nvs_get_str(h, "mpass", s_mqtt_pass, &n);
     nvs_close(h);
+    /* The household's own broker, as the default for a panel nobody has set up
+     * yet; the settings page overrides it. */
     if (s_uri[0] == 0) {
-        /* Never set up: the household's own broker, over TLS. */
         strlcpy(s_uri, HEATING_DEFAULT_BROKER_URI, sizeof(s_uri));
         strlcpy(s_user, HEATING_DEFAULT_BROKER_USER, sizeof(s_user));
         ESP_LOGI(TAG, "no broker saved — default %s", s_uri);
@@ -477,18 +480,26 @@ bool app_mqtt_configured(void)
 
 void app_mqtt_set_broker_ca(const char *pem)
 {
-    free(s_ca_pem);
-    s_ca_pem = NULL;
-    if (pem == NULL || pem[0] == 0) return;
-    size_t n = strlen(pem) + 1;
-    s_ca_pem = (char *)malloc(n);
-    if (s_ca_pem == NULL) return;
-    memcpy(s_ca_pem, pem, n);
+    /* A fixed buffer, so a live session's certificate pointer stays valid; a
+     * new CA takes effect on the next (re)connect. */
+    snprintf(s_ca_buf, sizeof(s_ca_buf), "%s", (pem != NULL) ? pem : "");
+    if (s_ca_buf[0] == 0) return;
+
+    /* If a session is already up it was built without this CA: restart it so
+     * the new anchor applies now rather than at some later reconnect. */
+    if (s_client != NULL) {
+        esp_mqtt_client_stop(s_client);
+        esp_mqtt_client_destroy(s_client);
+        s_client = NULL;
+        s_connected = false;
+        heating_broker_ready(false);
+    }
+    mqtt_start_client();
 }
 
 const char *app_mqtt_broker_ca(void)
 {
-    return s_ca_pem ? s_ca_pem : "";
+    return s_ca_buf;
 }
 
 bool app_mqtt_broker_tls(void)
@@ -646,6 +657,10 @@ esp_err_t app_mqtt_init(void)
     setup_cmd.help = "Guided setup: asks for Wi-Fi, then the broker URI and its credentials";
     setup_cmd.func = &mqtt_setup_cmd;
     app_console_register_cmd(&setup_cmd);
+
+    /* The stored settings — without this the panel would come up factory-fresh
+     * on every boot. Loaded before the configured/AP decision below. */
+    mqtt_load_config();
 
     /* Until the radio exists the settings page cannot be reached, so this is
      * where the very first connection starts. Never aborts boot: an

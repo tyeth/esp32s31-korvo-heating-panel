@@ -41,7 +41,7 @@
 static const char *TAG = "heating_web";
 
 /* The form: one entry per field, the key exactly as the page names it. */
-#define FORM_FIELDS         (4 + HEATING_ROOMS * 3)
+#define FORM_FIELDS         (5 + HEATING_ROOMS * 3)
 #define FORM_VALUE_MAX      (HEATING_TOPIC_MAX + 8)
 
 typedef struct {
@@ -54,7 +54,7 @@ static bool s_submit = false;
 static bool s_permit = false;
 
 static const char *const k_field_keys[FORM_FIELDS] = {
-    "ssid", "pass", "broker", "apass",
+    "ssid", "pass", "broker", "apass", "ca",
     "r0name", "r0trv", "r0sensor",
     "r1name", "r1trv", "r1sensor",
     "r2name", "r2trv", "r2sensor",
@@ -220,6 +220,10 @@ static void render_page(bool saved)
     app_webui_send_chunk("<p style='font-size:12px;color:#888'>TLS is used for an mqtts:// URI. "
                          "Because the server's certificate is issued for a different name than "
                          "the one dialled, the name is not verified; the chain still is.</p>");
+    app_webui_send_chunk("<label>Broker root CA, PEM (optional — the device's built-in pack is "
+                         "used when empty)<br><textarea name=\"ca\" rows=4 "
+                         "style=\"width:100%;background:#1e1e1e;color:#eee;border:1px solid "
+                         "#333;border-radius:6px\"></textarea></label>");
 
     static const char *const title[HEATING_ROOMS] = {
         "<h2>Bathroom</h2>", "<h2>Hallway</h2>", "<h2>Office</h2>", "<h2>Living room</h2>"
@@ -314,12 +318,18 @@ static void apply_form(void)
      * during/right after the restart already sees the new table. */
     heating_save_cfg();
 
-    if (form_get("broker")[0]) {
+    if (form_get("apass")[0] || form_get("ca")[0]) {
+        /* A new broker password or CA: the session is rebuilt around it. */
         const char *pass = form_get("apass")[0] ? form_get("apass") : app_mqtt_user_password();
-        esp_err_t err = app_mqtt_set_broker(form_get("broker"), app_mqtt_user(), pass);
+        esp_err_t err = app_mqtt_set_broker(form_get("broker")[0] ? form_get("broker")
+                                                                 : app_mqtt_broker_uri(),
+                                           app_mqtt_user(), pass);
         if (err != ESP_OK) ESP_LOGW(TAG, "broker not saved: %s", esp_err_to_name(err));
-    } else if (form_get("apass")[0]) {
-        app_mqtt_set_broker(app_mqtt_broker_uri(), app_mqtt_user(), form_get("apass"));
+        if (form_get("ca")[0]) app_mqtt_set_broker_ca(form_get("ca"));
+    } else if (form_get("broker")[0]) {
+        esp_err_t err = app_mqtt_set_broker(form_get("broker"), app_mqtt_user(),
+                                           app_mqtt_user_password());
+        if (err != ESP_OK) ESP_LOGW(TAG, "broker not saved: %s", esp_err_to_name(err));
     }
 
     if (form_get("ssid")[0]) {
@@ -335,7 +345,7 @@ static esp_err_t settings_entry(void)
 {
     form_reset();
 
-    char body[1800];
+    char body[3000];
     int total = 0, n;
     while (total < (int)sizeof(body) - 1 &&
            (n = app_webui_read_request(body + total, sizeof(body) - 1 - total)) > 0) {
