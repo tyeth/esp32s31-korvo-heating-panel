@@ -1,0 +1,16 @@
+.metadata/
+.DS_Store
+artifacts/device.log
+artifacts/device-virtual.log
+artifacts/device-hardware.log
+third_party/
+sdk/
+.zc-objhash-*
+firmware/.zc-objhash-*
+firmware/build/
+firmware/managed_components/
+firmware/dependencies.lock
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/.clangd
+esp-idf
