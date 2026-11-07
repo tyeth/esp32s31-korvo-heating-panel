@@ -1,13 +1,13 @@
 {
-  "writer": "user",
-  "updatedAt": "2026-11-07T14:31:22.509Z",
+  "writer": "product_description",
+  "updatedAt": "2026-11-07T14:31:32.300Z",
   "diagram": {
     "schema": "esp-viz/3",
     "nodes": [
       {
-        "id": "board",
+        "id": "__board",
         "kind": "board",
-        "name": "ESP32-S31-Korvo-1",
+        "name": "esp32s31",
         "ref": "esp32-s31-korvo-1",
         "chips": [
           {
@@ -19,6 +19,6 @@
       }
     ],
     "wires": [],
-    "primaryBoard": "board"
+    "primaryBoard": "__board"
   }
 }
