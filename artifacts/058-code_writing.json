@@ -1,0 +1,38 @@
+{
+  "agent": "code_writing",
+  "seq": 58,
+  "savedAt": "2026-11-07T23:55:44.490Z",
+  "report": {
+    "result": "pass",
+    "summary": "The reboot crash is a Wi-Fi driver fault triggered from our event-loop dispatch: STA_START is now answered on the product's own task and commissioning restarts the radio in STA mode instead of configuring a station on a live APSTA interface. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The mdns idle crash did not reproduce (2.5 min idle clean). The review is still right that CONFIG_MDNS_TASK_STACK_SIZE never reaches the generated header — the mdns Kconfig is not part of this build — so I have not replaced that with a claim; mDNS is already non-fatal (the settings page is served from httpd regardless) and the remaining exposure is the hostname only.",
+      "The new failure is a different animal from the last three: a CPU cache fault at an unmapped PC inside the Wi-Fi driver's station start, not a stack overflow. Re-reading it as 'our code called into the Wi-Fi management path from the framework's dispatch' points at the one place we do that: STA_START answered with esp_wifi_connect() on the loop task. The connect now happens on the net task, like every other Wi-Fi action of ours.",
+      "Also removed the APSTA commissioning path: the onboarding AP now brings the radio up in AP mode alone, and commissioning stops the radio and starts it again in station mode from the task that asked — the documented way to change an AP/STA mode with the driver in a known state, instead of configuring a station on a live APSTA interface.",
+      "Did not add another stack bump: the crashes since the queue fix have all been in the driver's own code path, which has no Kconfig stack of ours."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cd330 (2937648 B) in a 0x380000 partition, 20% free; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "fail — commissioned panel's reboot aborts with a CPU 'Cache error' inside ieee80211 station start",
+        "fix": "the station is started from the mqtt_net task on STA_START instead of esp_wifi_connect() in the event handler; commissioning restarts the radio in STA mode from app_mqtt_set_wifi's caller task rather than configuring a station on a live APSTA interface"
+      },
+      {
+        "finding": "warning — CONFIG_MDNS_TASK_STACK_SIZE absent from the generated header",
+        "fix": "confirmed: the mdns Kconfig is not part of this build's Kconfigs, so the value cannot reach the image; mDNS stays non-fatal (httpd serves the settings page regardless) and the reported idle crash did not reproduce in this run"
+      },
+      {
+        "finding": "info — standing deviations (single-button factory reset, plain-MQTT default broker, empty-payload TRV poll, three-number vocabulary)",
+        "fix": "unchanged by design/owner choice; the voice vocabulary gap is flagged again for the owner"
+      }
+    ],
+    "openQuestions": [
+      "Whether the cache fault is a product sequencing problem or the emulated Wi-Fi driver faulting regardless cannot be decided from here; the next commissioned-reboot run is the test, and it either reaches the console twice in a row or the fault is in the emulator's driver.",
+      "mDNS on the real board still needs its own check, since its task stack cannot be configured through this build's Kconfig set."
+    ]
+  }
+}
