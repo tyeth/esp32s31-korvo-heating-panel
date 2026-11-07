@@ -1,0 +1,34 @@
+{
+  "agent": "firmware_compilation",
+  "seq": 55,
+  "savedAt": "2026-11-07T22:24:52.752Z",
+  "report": {
+    "result": "pass",
+    "summary": "Build succeeded for esp32s31 with the Board Manager config regenerated; no compile or link errors.",
+    "report": {
+      "binaryPath": "firmware/build/zerocode_ai_firmware.bin",
+      "board": "esp32-s31-korvo-1",
+      "buildId": "cb:zerocode-build-lambda:d96aedaf-7ba6-4986-ab7d-bb721ac19332",
+      "exitCode": 0,
+      "firmwareSize": "0x2cd390 (2937744 B)",
+      "flashUsage": "app partition 0x380000 (3670016 B); 0xb2c70 (732272 B) = 20% free; bootloader 0x5700 (22272 B), 9% free",
+      "mergedImage": "firmware/build/merged_flash.bin (0xa092c7 bytes, flash at 0x0)",
+      "notes": [
+        "Build itself was a no-op incremental (compile 1.7 s, 4 ninja steps — only the size-check bookkeeping and bootloader step reran); the ELF and firmware.bin were already up to date and the image merged cleanly.",
+        "Board Manager re-ran its generator for this round: resolved board esp32_s31_korvo_1, validated 8 peripherals and 12 devices, generated Kconfig/board_manager.defaults and gen_bmgr_codes CMakeLists/idf_component.yml, then reported 'bmgr-unchanged' (board unchanged, sdkconfig preserved, board-manager symbols consistent).",
+        "Binary shrank by -0 vs previous round's 0x2cd310? No — grew by 128 B (0x2cd310 -> 0x2cd390); partition headroom still 20%.",
+        "eFuse virtualization verified in sdkconfig (CONFIG_EFUSE_VIRTUAL=y).",
+        "Ship artifacts produced: merged_flash.bin plus a small delta upload (7 files, 4.1 MB)."
+      ],
+      "previousBuildId": "cb:zerocode-build-lambda:d8367e91-e8e2-4c1b-98dc-0b76bdc31b6e",
+      "ramUsage": "not reported in build output (no static DRAM/IRAM summary line in log tail)",
+      "status": "success",
+      "target": "esp32s31",
+      "warnings": [
+        "Benign, environment-level (not project code): board-manager emits many '⚠️ Duplicate board ... from /opt/esp/board-manager/esp_boards/... overrides previous board from .../managed_components/espressif__esp_boards/...' notices because the system board set shadows the managed-component copy; the correct board (esp32_s31_korvo_1) was resolved and used.",
+        "'Warning: Failed to import extension .../managed_components/espressif__esp_board_manager/idf_ext.py: cannot import name 'AmbiguousBoardSelectorError' from 'generators.config_generator'' — version skew between the managed esp_board_manager extension and the system board-manager generator; non-fatal, build completed and config generation succeeded.",
+        "Board Manager repeatedly notes board_manager.defaults has higher priority than the project sdkconfig.defaults — relevant if a project-level config setting ever appears not to take effect."
+      ]
+    }
+  }
+}
