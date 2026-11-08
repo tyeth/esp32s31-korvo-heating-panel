@@ -36,6 +36,10 @@ size_t app_audio_window_audio(const int16_t **pcm);
  *  the recogniser's task only — never while the live window is open. */
 int app_audio_decode_buffer(const int16_t *pcm, size_t n, int *pct);
 
+/** Pause/resume feeding the mic into the AFE (the mic keeps draining). Held
+ *  around the offline reinterpretation passes to keep the CPU breathable. */
+void app_audio_pause_feed(bool pause);
+
 /** Close that window now (a second press, or the 10 s timer). */
 void app_audio_listen_stop(void);
 

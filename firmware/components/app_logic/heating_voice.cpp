@@ -17,17 +17,17 @@
  * MultiNet is a fixed-phrase recogniser (no free slots), so "any room, any
  * value" is an enumerated grid, sized against ESP_MN_MAX_PHRASE_NUM (400):
  *
- *   "set the <room> to <5..30>"                       every room, whole degrees
- *   "set <room> to <15..25>"                          the same without "the" —
- *                                                     an exact-phrase matcher
- *                                                     hears them as different
- *   "<room> <15..25>"                                 the short form, home range
- *   "set the <room> to <16..23> and a half"           halves, both forms,
- *   "<room> <16..23> and a half"                      said either way:
- *   "set the <room> to <16..23> point five"           "… and a half" or
- *   "<room> <16..23> point five"                      "… point five"
- *   "set all rooms to <5..30>"                        the whole house at once
- *   "set the <roomA> and the <roomB> to <19..21>"     two rooms, either order
+ *   "set the <room> to <15..25>"                      the comfort band only —
+ *   "set <room> to <15..25>"                          frost extremes are not
+ *   "set <room> <15..25>"                             voice-reachable; each
+ *   "<room> <15..25>"                                 wording is its own phrase
+ *                                                     (exact-phrase matcher)
+ *   "set the <room> to <16..23> and a half"           halves, either wording:
+ *   "<room> <16..23> and a half"                      "… and a half" or
+ *   "set the <room> to <16..23> point five"           "… point five"
+ *   "<room> <16..23> point five"
+ *   "set all rooms to <15..25>"                       the whole house at once
+ *   "set the <roomA> and the <roomB> to <19..22>"     two rooms, either order
  *   "warm up [the <room>]" / "cool down [the <room>]" ±1 °C
  *   "cancel" / "stop"                                 nothing is published
  *   "set the kitchen|bedroom to 20"                   "… has no smart TRV"
@@ -42,6 +42,7 @@
 #include "app_config.h"
 
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,16 +61,20 @@ static const char *TAG = "heating_voice";
  * under MultiNet's 400-phrase ceiling (396 with four rooms): "set <room> to
  * N" without "the" is its own family — an exact-phrase matcher does not
  * forgive a dropped article — paid for by narrower half and pair ranges. */
-#define FULL_MIN   5     /* "set the <room> to N"            */
-#define FULL_MAX  30
-#define NOTHE_MIN 15     /* "set <room> to N"                */
-#define NOTHE_MAX 25
-#define BARE_MIN  15     /* "<room> N"                       */
-#define BARE_MAX  25
+/* Voice commands cover the MAIN HEATING setpoint band only — 15..25 °C in
+ * every phrase form, rooms and all-rooms alike. Frost-protection and other
+ * extremes are deliberately not reachable by voice: the settings page and the
+ * touch panel own those. */
+#define FULL_MIN  15
+#define FULL_MAX  25
+#define NOTHE_MIN FULL_MIN
+#define NOTHE_MAX FULL_MAX
+#define BARE_MIN  FULL_MIN
+#define BARE_MAX  FULL_MAX
 #define HALF_MIN  16     /* "… N and a half" / "… N point five" */
 #define HALF_MAX  23
 #define PAIR_MIN  19     /* "set the A and the B to N"       */
-#define PAIR_MAX  21
+#define PAIR_MAX  22
 
 /* The rooms that exist in the house but carry no smart TRV — naming one gets
  * "Kitchen has no smart TRV" instead of silence (spec failureModes). */
@@ -79,6 +84,7 @@ static const char *const k_unheated[VOICE_NO_TRV_COUNT] = { "Kitchen", "Bedroom"
 typedef enum : uint8_t {
     ACT_SET,          /* room_a -> tenth                         */
     ACT_SET_NOTHE,    /* same, said without "the"                */
+    ACT_SET_NOTO,     /* same, said without "the" or "to"        */
     ACT_SET_HALF,     /* same, said "… and a half"               */
     ACT_SET_P5,       /* same, said "… point five"               */
     ACT_SET_BARE,     /* "<room> N"                              */
@@ -129,6 +135,9 @@ static void phrase_text(int i, char *buf, size_t len)
             break;
         case ACT_SET_NOTHE:
             snprintf(buf, len, "set %s to %d", room_name(p->room_a), deg);
+            break;
+        case ACT_SET_NOTO:
+            snprintf(buf, len, "set %s %d", room_name(p->room_a), deg);
             break;
         case ACT_SET_HALF:
             snprintf(buf, len, "set the %s to %d and a half", room_name(p->room_a), deg);
@@ -190,7 +199,10 @@ static void build_table(void)
     s_table_n = 0;
     for (int r = 0; r < HEATING_ROOMS; r++) {
         for (int d = FULL_MIN; d <= FULL_MAX; d++) table_push(ACT_SET, r, -1, (int16_t)(d * 10));
-        for (int d = NOTHE_MIN; d <= NOTHE_MAX; d++) table_push(ACT_SET_NOTHE, r, -1, (int16_t)(d * 10));
+        for (int d = NOTHE_MIN; d <= NOTHE_MAX; d++) {
+            table_push(ACT_SET_NOTHE, r, -1, (int16_t)(d * 10));
+            table_push(ACT_SET_NOTO,  r, -1, (int16_t)(d * 10));
+        }
         for (int d = BARE_MIN; d <= BARE_MAX; d++) table_push(ACT_SET_BARE, r, -1, (int16_t)(d * 10));
         for (int d = HALF_MIN; d <= HALF_MAX; d++) {
             table_push(ACT_SET_HALF,      r, -1, (int16_t)(d * 10 + 5));
@@ -281,11 +293,16 @@ static int add_number_grammar(void)
 static void set_grammar(bool numbers)
 {
     if (s_num_grammar == numbers && s_registered) return;
+    uint32_t heap_before = esp_get_free_heap_size();
     esp_mn_commands_clear();
     int added = numbers ? add_number_grammar() : add_full_grammar();
     esp_mn_commands_update();
     s_num_grammar = numbers;
-    ESP_LOGI(TAG, "grammar: %s (%d phrases)", numbers ? "numbers only" : "full", added);
+    /* The heap delta watches for a leak in the repeated runtime rebuilds: a
+     * panel that crashes after many voice attempts starts as a slow bleed here. */
+    ESP_LOGI(TAG, "grammar: %s (%d phrases, heap %u -> %u)",
+             numbers ? "numbers only" : "full", added,
+             (unsigned)heap_before, (unsigned)esp_get_free_heap_size());
 }
 
 /**
@@ -378,7 +395,8 @@ static void apply(int idx, int16_t tenth)
 static bool phrase_is_set(const voice_phrase_t *p)
 {
     switch (p->act) {
-        case ACT_SET: case ACT_SET_NOTHE: case ACT_SET_HALF: case ACT_SET_P5:
+        case ACT_SET: case ACT_SET_NOTHE: case ACT_SET_NOTO:
+        case ACT_SET_HALF: case ACT_SET_P5:
         case ACT_SET_BARE: case ACT_SET_BARE_HALF: case ACT_SET_BARE_P5:
         case ACT_SET_ALL: case ACT_SET_PAIR:
             return true;
@@ -503,6 +521,10 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
     memset(work + n, 0, tail_zeros * sizeof(int16_t));
     normalize_pcm(work, n);
 
+    /* The offline passes own the CPU for a few seconds: stop feeding the AFE
+     * meanwhile (the mic keeps draining), resumed on every exit below. */
+    app_audio_pause_feed(true);
+
     /* Pass A: the whole normalised utterance, full grammar — an independent
      * second reading of the same words. */
     int pct_a = 0;
@@ -523,6 +545,7 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
                   (live_pct >= VOICE_FLOOR_PCT || pct_a >= VOICE_FLOOR_PCT));
     if (!agree) {
         free(work);
+        app_audio_pause_feed(false);
         if (live_p == NULL && p_a != NULL && pct_a >= VOICE_SURE_PCT) {
             apply_scope(p_a, p_a->tenth);
             return;
@@ -558,7 +581,6 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
         }
         if (tn >= n) break;
     }
-    set_grammar(false);
     free(work);
 
     /* Tail evidence by strength, measured on this board: a mid-phrase
@@ -567,6 +589,10 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
      * contradiction must beat that ceiling to block anything; an extension is
      * structurally tied to the agreed value (noise rarely lands on one), so
      * it corrects from the ordinary floor; anything weaker is ignored. */
+    /* The OUTCOME goes first — the person is standing at the panel — and the
+     * 377-phrase grammar rebuild (seconds, on this task) follows; the next
+     * window cannot open until this task loops anyway, and the feed stays
+     * paused until the full grammar is back. */
     #define VOICE_TAIL_VETO_PCT 22
     if (best_tenth >= 0 && best_npct >= VOICE_FLOOR_PCT &&
         best_tenth != v_s && value_extends(v_s, best_tenth)) {
@@ -575,21 +601,21 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
                  v_s / 10, (v_s % 10 + 10) % 10,
                  best_tenth / 10, (best_tenth % 10 + 10) % 10, best_npct);
         apply_scope(live_p, best_tenth);
-        return;
-    }
-    if (best_tenth >= 0 && best_npct >= VOICE_TAIL_VETO_PCT &&
-        best_tenth != v_s && !value_extends(v_s, best_tenth)) {
+    } else if (best_tenth >= 0 && best_npct >= VOICE_TAIL_VETO_PCT &&
+               best_tenth != v_s && !value_extends(v_s, best_tenth)) {
         ESP_LOGI(TAG, "reinterpret: tail contradicts the sentence (%d.%d vs %d.%d "
                       "at %d%%) — nothing applied",
                  best_tenth / 10, (best_tenth % 10 + 10) % 10,
                  v_s / 10, (v_s % 10 + 10) % 10, best_npct);
         too_uncertain();
-        return;
+    } else {
+        ESP_LOGI(TAG, "reinterpret: both readings agree — applying %d.%d%s",
+                 v_s / 10, (v_s % 10 + 10) % 10,
+                 best_tenth == v_s ? " (tail confirms)" : "");
+        apply_scope(live_p, v_s);
     }
-    ESP_LOGI(TAG, "reinterpret: both readings agree — applying %d.%d%s",
-             v_s / 10, (v_s % 10 + 10) % 10,
-             best_tenth == v_s ? " (tail confirms)" : "");
-    apply_scope(live_p, v_s);
+    set_grammar(false);
+    app_audio_pause_feed(false);
 }
 
 /* Called by the audio framework for one recognised phrase id. */

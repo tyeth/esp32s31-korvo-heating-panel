@@ -26,6 +26,8 @@ static const char *TAG = "app_audio";
 
 static app_driver_handle_t s_handle = 0;
 
+static volatile bool s_feed_pause = false;   /* see app_audio_pause_feed() */
+
 static srmodel_list_t *s_models = NULL;
 static const esp_afe_sr_iface_t *s_afe = NULL;
 static esp_afe_sr_data_t *s_afe_data = NULL;
@@ -282,7 +284,9 @@ static void audio_feed_task(void *arg)
             ESP_LOGI(TAG, "mic level: peak %d over the last second", (int)s_peak);
             s_peak = 0;
         }
-        s_afe->feed(s_afe_data, buf);
+        if (!s_feed_pause) {
+            s_afe->feed(s_afe_data, buf);
+        }
     }
 }
 
@@ -291,6 +295,16 @@ static void audio_feed_task(void *arg)
  * second press (or the panel's own timer) requests it closed. Both are one
  * flag the detect task honours whichever state it is in. */
 static volatile bool s_btn_window = false;   /* a press wants the mic open */
+
+/* While the reinterpretation passes monopolise the detect task, feeding the
+ * AFE only fills a ring nobody drains (and the warning storm plus the extra
+ * DSP contend with Wi-Fi for the CPU — the earlier interrupt-watchdog panics
+ * lived in exactly that squeeze). The mic keeps being READ so the codec's DMA
+ * stays in step; the samples just stop going into the AFE. */
+void app_audio_pause_feed(bool pause)
+{
+    s_feed_pause = pause;
+}
 
 void app_audio_listen_once(void)
 {
