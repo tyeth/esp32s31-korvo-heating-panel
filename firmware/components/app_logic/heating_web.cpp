@@ -351,25 +351,32 @@ static void apply_form(void)
 
 /* ── the request ─────────────────────────────────────────────────────── */
 
+/* The POST body. Static, not on the stack: the httpd task's stack (4 KB by
+ * default) cannot hold a 3 KB body plus the render buffers, and this page is
+ * the one place a person can change the panel's broker and Wi-Fi credentials —
+ * a stack fault here takes the whole panel down instead of answering a request.
+ * app_webui serves one settings request at a time (the request being served is
+ * held in s_stgs_req), so a single buffer is enough. */
+static char s_body[3000];
+
 static esp_err_t settings_entry(void)
 {
     form_reset();
 
-    char body[3000];
     int total = 0, n;
-    while (total < (int)sizeof(body) - 1 &&
-           (n = app_webui_read_request(body + total, sizeof(body) - 1 - total)) > 0) {
+    while (total < (int)sizeof(s_body) - 1 &&
+           (n = app_webui_read_request(s_body + total, sizeof(s_body) - 1 - total)) > 0) {
         total += n;
     }
-    body[total] = '\0';
+    s_body[total] = '\0';
 
     /* A body that did not fit would be applied a field short, and a half
      * decoded topic is worse than a rejected form: change nothing. */
-    if (total >= (int)sizeof(body) - 1) {
+    if (total >= (int)sizeof(s_body) - 1) {
         render_message("Form too long \xE2\x80\x94 nothing was changed");
         return ESP_OK;
     }
-    if (total > 0) form_parse(body);
+    if (total > 0) form_parse(s_body);
 
     if (s_permit) {
         esp_err_t err = heating_permit_join();
