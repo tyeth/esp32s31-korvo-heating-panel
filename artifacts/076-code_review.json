@@ -1,0 +1,164 @@
+{
+  "agent": "code_review",
+  "seq": 76,
+  "savedAt": "2026-11-08T01:39:22.669Z",
+  "report": {
+    "result": "pass",
+    "summary": "My two previous info items are fixed and verified (offline give-up now enabled by default with a real 30 s retry; the spec's \"set the office to 21\" phrase added, 21 phrases), but the change introduced a new warning: the broker retry and the Wi-Fi retry now share one esp_timer handle, so whichever path creates it fixes the callback for both and one path silently breaks the other.",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish current_heating_setpoint to zigbee2mqtt/<TRV> (qos1, retain 0); on connect subscribe every TRV/air-sensor topic and publish an empty message to each; time 254 to zigbee2mqtt/bridge/request/permit_join; retained status topic zerocode/mac/status with last-will. Every accepted room message is logged with room name and truncated payload. HTTP /settings, /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init (21 English phrases)",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init",
+          "app_mqtt_init (event queue + mqtt_net; STA or AP-only onboarding)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init (+ status_log task 60 s)",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>; bare heating lists rooms plus the Wi-Fi/broker/reporting state line",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "expectedLogPatterns": [
+          "heating_voice: 21 of 21 English phrases registered",
+          "heating: <room>: zigbee2mqtt/0x... => {...} per accepted state message",
+          "app_mqtt: MQTT connected; if the broker never answers: broker unreachable for N s - retrying every 30 s, then periodic retrying the broker",
+          "app_mqtt: Wi-Fi disconnected - retrying in 30 s; Wi-Fi reconnect attempt",
+          "diagnostics: status: broker ..., clock ..., heap ... every 60 s",
+          "app_console: Console ready; app_main: ZeroCode AI firmware started"
+        ],
+        "findings": [
+          {
+            "area": "correctness",
+            "description": "The offline give-up path and the Wi-Fi reconnect path now share one timer handle (s_retry_timer moved to file scope). esp_timer fixes a timer's callback at creation, so whichever path creates the handle decides the callback for both uses. If the broker give-up fires first, a later Wi-Fi disconnect reuses the handle and its one-shot Wi-Fi restart kills the periodic broker retry; if a Wi-Fi disconnect created it first, a later broker give-up restarts it periodic with the wifi_retry_cb callback still attached, so every 30 s the panel calls esp_wifi_connect() and never reconnects the broker.",
+            "evidence": "app_mqtt.cpp:66 single static esp_timer_handle_t s_retry_timer; :231-240 offline give-up creates it with callback &offline_retry_cb and start_periodic; :382-391 Wi-Fi disconnect reuses the same handle with callback &wifi_retry_cb and start_once (search for s_retry_timer lists both sites).",
+            "failureScenario": "Wi-Fi drops (timer created for wifi_retry_cb, one-shot 30 s) and then the broker gives up (300 s, no session): the pending Wi-Fi retry is cancelled, the timer restarts periodic with wifi_retry_cb still attached, and every 30 s the panel calls esp_wifi_connect() and never reconnects the MQTT client - the broker stays down until a reboot or a manual mqtt-broker. In the other order a single Wi-Fi drop silently stops the broker retry, restoring the never-retried state this change was meant to remove.",
+            "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+            "line": 231,
+            "severity": "warning",
+            "suggestedChange": "Use two separate esp_timer handles (Wi-Fi retry and broker retry) or one callback that branches on a mode flag; never reuse a timer created with a different callback."
+          },
+          {
+            "area": "spec_alignment",
+            "description": "The factory reset remains a 10 s hold of the single front button rather than the spec's SET+MODE combination; control.cpp binds only handles[0], which supports the writer's statement that the group's other buttons do not report separately.",
+            "evidence": "app_logic.cpp:375-376 COMBO_ARM_MS on handles[0]; control.cpp zc_set_btn_init binds only handles[0].",
+            "failureScenario": "A finger resting on the front button for 10 s wipes Wi-Fi, broker and room topics without a second confirming button.",
+            "file": "firmware/components/app_logic/app_logic.cpp",
+            "line": 375,
+            "severity": "info",
+            "suggestedChange": "Record the deviation in the product description, or require a confirming gesture inside the countdown."
+          }
+        ],
+        "filesReviewed": [
+          "artifacts/072-code_review.json",
+          "artifacts/073-functional_testing.json",
+          "artifacts/074-code_writing.json",
+          "artifacts/075-firmware_compilation.json",
+          "firmware/components/app_mqtt/app_mqtt.cpp",
+          "firmware/components/app_logic/heating_voice.cpp"
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button - click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD 800x480",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "Voice vocabulary is now 21 phrases: set the <room> to 20 / 21 / 21.5 and <room> 21 and a half for each of four rooms, plus Kitchen/Bedroom refusals, warm up, cool down and cancel; the spec example set the office to 21 (21.0 C) is now recognised.",
+          "Offline give-up is on by default: after 300 s without a session the client stops, one line is logged, and offline_retry_cb reconnects it every 30 s.",
+          "The broker retry and the Wi-Fi retry share the s_retry_timer handle, so whichever path creates it decides the callback for both (see finding).",
+          "The commissioned-reboot crash changed frame again (ppTask -> ppProcessTxQ -> ppGetTxframe at PC 0x2FAFAAD4) with the same cache-error signature, strengthening the emulator/memory-corruption hypothesis; still deferred to hardware.",
+          "The settings page fix is verified only by construction (no network peer and no browser in the lab)."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (single setup task, lvgl_port_add_disp_rgb + add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim generic dot product, 21 English phrases",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (event queue + mqtt_net; AP-only onboarding, STA on commissioning; offline give-up + 30 s retry; CA in NVS)",
+            "part": "Wi-Fi / MQTT"
+          },
+          {
+            "driver": "app_webui (httpd always, mdns non-fatal, static settings body)",
+            "part": "web UI / mDNS"
+          }
+        ],
+        "previousFindingsStatus": [
+          {
+            "evidence": "app_mqtt.cpp:67 s_offline_retry_forever = false; :221-240 the give-up branch stops the client, logs once and starts a periodic offline_retry_cb calling esp_mqtt_client_reconnect.",
+            "finding": "info - offline give-up policy has no caller, branch dead, log floods every 30 s",
+            "status": "fixed (policy enabled by default and a real retry timer wired); the text now matches the code"
+          },
+          {
+            "evidence": "heating_voice.cpp:51 VOICE_ID_SET_VARIANTS 4; k_variant_tenth gains 210 for set the <room> to 21; phrase_text gains the matching variant.",
+            "finding": "info - spec example set the office to 21 unsupported",
+            "status": "fixed (21 phrases per report 074)"
+          },
+          {
+            "evidence": "heating_web.cpp:359 static char s_body[3000].",
+            "finding": "consumer-reported settings-page crash",
+            "status": "fixed by construction; unverified through a browser"
+          },
+          {
+            "evidence": "artifacts/073: Cache error now at PC 0x2FAFAAD4 in ppTask/ppProcessTxQ/ppGetTxframe, sixth round.",
+            "finding": "commissioned reboot aborts inside the Wi-Fi driver",
+            "status": "unchanged; emulator-side, deferred to hardware"
+          },
+          {
+            "evidence": "app_logic.cpp:375-376; control.cpp binds handles[0] only.",
+            "finding": "factory reset is a single-button 10 s hold",
+            "status": "unchanged, documented deviation"
+          }
+        ]
+      }
+    }
+  }
+}
