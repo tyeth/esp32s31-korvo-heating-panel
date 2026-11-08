@@ -332,10 +332,19 @@ heating_req_result_t heating_request_target(int idx, int16_t tenth)
     char payload[48];
     char cmd_topic[HEATING_TOPIC_MAX + 32];
     format_tenth(tenth, value, sizeof(value));
-    int n = snprintf(payload, sizeof(payload), "{\"current_heating_setpoint\": \"%s\"}", value);
     /* The command topic, not the state topic: a setpoint written back into the
      * state JSON is only an echo, zigbee2mqtt never acts on it. */
     command_topic_for(room->cfg.trv_topic, cmd_topic, sizeof(cmd_topic));
+    /* zigbee2mqtt's two command forms take different payloads: the
+     * per-attribute topic (<device>/set/current_heating_setpoint) takes the
+     * BARE value, the aggregate topic (<device>/set) takes the JSON object.
+     * A JSON object on the per-attribute topic is rejected as "not a number". */
+    int n;
+    if (strstr(cmd_topic, "/set/") != NULL) {
+        n = snprintf(payload, sizeof(payload), "%s", value);
+    } else {
+        n = snprintf(payload, sizeof(payload), "{\"current_heating_setpoint\": \"%s\"}", value);
+    }
     if (app_mqtt_publish(cmd_topic, payload, n, 1, false) < 0) {
         return HEATING_REQ_OFFLINE;
     }
@@ -432,6 +441,22 @@ void heating_broker_ready(bool online)
                  s_rooms[i].cfg.trv_topic, heating_room_command_topic(i));
     }
     app_mqtt_subscribe("zigbee2mqtt/bridge/devices");
+    /* These TRVs are Tuya: their attributes carry no GET access, so the /get
+     * poll below goes unanswered, and zigbee2mqtt does not retain device state
+     * unless asked — a freshly booted panel would stay blank until a valve
+     * happens to report. Ask the bridge to RETAIN each room device's state
+     * publishes (persisted in its configuration, idempotent to repeat): from
+     * the device's next report on, every boot syncs instantly from the broker. */
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        static const char kPrefix[] = "zigbee2mqtt/";
+        const char *t = s_rooms[i].cfg.trv_topic;
+        if (strncmp(t, kPrefix, sizeof(kPrefix) - 1) != 0) continue;
+        char req[HEATING_TOPIC_MAX + 48];
+        int rn = snprintf(req, sizeof(req),
+                          "{\"id\": \"%s\", \"options\": {\"retain\": true}}",
+                          t + sizeof(kPrefix) - 1);
+        app_mqtt_publish("zigbee2mqtt/bridge/request/device/options", req, rn, 0, false);
+    }
     /* zigbee2mqtt only publishes a state topic when something changes, so
      * nobody would hear from a TRV until a valve moves — request the current
      * state of every topic, as a Home Assistant device does when it starts. */
@@ -440,17 +465,28 @@ void heating_broker_ready(bool online)
     heating_log_diag();
 }
 
+/* Ask zigbee2mqtt for a device's current state: a read request on the
+ * device's /get topic, naming the attributes the cards parse. A message on
+ * the bare state topic does nothing — zigbee2mqtt only ever PUBLISHES there,
+ * and this panel is subscribed to it, so the old empty-payload "poll" went
+ * nowhere except straight back into our own handler. */
+static bool request_state_of(const char *state_topic, const char *attrs_json)
+{
+    char get_topic[HEATING_TOPIC_MAX + 8];
+    snprintf(get_topic, sizeof(get_topic), "%s/get", state_topic);
+    return app_mqtt_publish(get_topic, attrs_json, (int)strlen(attrs_json), 0, false) >= 0;
+}
+
 int heating_request_states(void)
 {
-    /* zigbee2mqtt answers a (any) message on a device topic with its whole
-     * state payload, which is exactly the JSON the cards already parse. The
-     * air sensors are reached the same way when a topic is set. */
-    static const char kPoll[] = "";
     int n = 0;
     for (int i = 0; i < HEATING_ROOMS; i++) {
         heating_room_t *room = &s_rooms[i];
-        if (room->cfg.trv_topic[0] && app_mqtt_publish(room->cfg.trv_topic, kPoll, 0, 0, false) >= 0) n++;
-        if (room->cfg.sensor_topic[0] && app_mqtt_publish(room->cfg.sensor_topic, kPoll, 0, 0, false) >= 0) n++;
+        if (room->cfg.trv_topic[0] &&
+            request_state_of(room->cfg.trv_topic,
+                             "{\"current_heating_setpoint\": \"\", \"local_temperature\": \"\"}")) n++;
+        if (room->cfg.sensor_topic[0] &&
+            request_state_of(room->cfg.sensor_topic, "{\"temperature\": \"\"}")) n++;
     }
     if (n > 0) ESP_LOGI(TAG, "state requested for %d topic(s)", n);
     return n;

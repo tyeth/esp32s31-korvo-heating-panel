@@ -63,7 +63,13 @@ static bool s_offline_reported = false;
  * was started (to measure how long it has been trying). */
 #define OFFLINE_GIVE_UP_S 300
 #define OFFLINE_RETRY_S   30
-static esp_timer_handle_t s_retry_timer = NULL;
+/* Two timers, deliberately separate: the broker's calm retry and the Wi-Fi
+ * rejoin used to share one handle, so whichever path created it first decided
+ * which callback BOTH paths fired — a Wi-Fi drop could end up poking a dead
+ * MQTT client instead of calling esp_wifi_connect(), and the link never came
+ * back. */
+static esp_timer_handle_t s_retry_timer = NULL;        /* broker offline retry */
+static esp_timer_handle_t s_wifi_retry_timer = NULL;   /* Wi-Fi rejoin */
 static bool     s_offline_retry_forever = false;
 static uint32_t s_offline_retry_delay_s = OFFLINE_RETRY_S;
 static int64_t  s_client_started_ms = 0;
@@ -96,13 +102,13 @@ static void offline_retry_cb(void *arg)
  * mqtt_event_cases — `connected` is in scope (1 = broker session up). */
 static void mqtt_on_event(int connected)
 {
-    (void)connected;
     /* Every (re)connect re-creates the subscriptions: a broker restarted in
      * clear session loses them, and in a persistent session they survive —
-     * subscribing twice is harmless, missing them is not. */
-    if (connected && s_held_online) {
-        heating_broker_ready(true);
-    }
+     * subscribing twice is harmless, missing them is not. The product is told
+     * on EVERY transition: the old gate on s_held_online was circular (only
+     * heating_broker_ready(true) ever set it), so the product never heard
+     * about the first connect and nothing was ever subscribed. */
+    heating_broker_ready(connected != 0);
 }
 
 /* Hardware/param bus -> state topics. Publishes only while connected;
@@ -183,10 +189,9 @@ void app_mqtt_set_data_handler(void (*handler)(const char *topic, int topic_len,
 
 void app_mqtt_set_online(bool online)
 {
+    /* Record only. Re-entering mqtt_on_event from here would recurse through
+     * heating_broker_ready -> app_mqtt_set_online forever. */
     s_held_online = online;
-    if (online) {
-        mqtt_on_event(1);
-    }
 }
 
 /** The broker URI this panel ships with: the Mosquitto add-on that usually runs
@@ -398,15 +403,15 @@ static void net_task(void *arg)
         }
         if (ev.base == WIFI_EVENT && ev.id == WIFI_EVENT_STA_DISCONNECTED) {
             ESP_LOGW(TAG, "Wi-Fi disconnected — retrying in %d s", RETRY_BACKOFF_S);
-            if (s_retry_timer == NULL) {
+            if (s_wifi_retry_timer == NULL) {
                 esp_timer_create_args_t args = {};
                 args.callback = &wifi_retry_cb;
                 args.name = "mqtt_wifi_retry";
-                esp_timer_create(&args, &s_retry_timer);
+                esp_timer_create(&args, &s_wifi_retry_timer);
             }
-            if (s_retry_timer) {
-                esp_timer_stop(s_retry_timer);
-                esp_timer_start_once(s_retry_timer, (uint64_t)RETRY_BACKOFF_S * 1000000ULL);
+            if (s_wifi_retry_timer) {
+                esp_timer_stop(s_wifi_retry_timer);
+                esp_timer_start_once(s_wifi_retry_timer, (uint64_t)RETRY_BACKOFF_S * 1000000ULL);
             }
         }
     }
@@ -574,20 +579,24 @@ bool app_mqtt_wifi_missing(void)
 
 static void mqtt_load_config(void)
 {
+    /* A fresh flash has no "zc_mqtt" namespace yet, so the open fails — the
+     * compiled-in defaults below must still apply, or a factory-fresh panel
+     * boots "not configured" even though it ships with a home network. */
     nvs_handle_t h;
-    if (nvs_open("zc_mqtt", NVS_READONLY, &h) != ESP_OK) return;
-    size_t n;
-    n = sizeof(s_ssid);      nvs_get_str(h, "ssid", s_ssid, &n);
-    n = sizeof(s_pass);      nvs_get_str(h, "pass", s_pass, &n);
-    n = sizeof(s_uri);       nvs_get_str(h, "uri", s_uri, &n);
-    n = sizeof(s_user);      nvs_get_str(h, "user", s_user, &n);
-    n = sizeof(s_mqtt_pass); nvs_get_str(h, "mpass", s_mqtt_pass, &n);
-    char ca[4096] = {0};
-    size_t ca_len = sizeof(ca);
-    if (nvs_get_str(h, "ca", ca, &ca_len) == ESP_OK) {
-        strlcpy(s_ca_buf, ca, sizeof(s_ca_buf));
+    if (nvs_open("zc_mqtt", NVS_READONLY, &h) == ESP_OK) {
+        size_t n;
+        n = sizeof(s_ssid);      nvs_get_str(h, "ssid", s_ssid, &n);
+        n = sizeof(s_pass);      nvs_get_str(h, "pass", s_pass, &n);
+        n = sizeof(s_uri);       nvs_get_str(h, "uri", s_uri, &n);
+        n = sizeof(s_user);      nvs_get_str(h, "user", s_user, &n);
+        n = sizeof(s_mqtt_pass); nvs_get_str(h, "mpass", s_mqtt_pass, &n);
+        char ca[4096] = {0};
+        size_t ca_len = sizeof(ca);
+        if (nvs_get_str(h, "ca", ca, &ca_len) == ESP_OK) {
+            strlcpy(s_ca_buf, ca, sizeof(s_ca_buf));
+        }
+        nvs_close(h);
     }
-    nvs_close(h);
     /* The home network, for a panel nobody has set up yet; the settings page
      * or console replaces it. */
     if (s_ssid[0] == 0) {
