@@ -17,6 +17,7 @@
 #include "app_logic.h"
 #include "app_config.h"
 #include "app_audio.h"
+#include "app_console.h"
 #include "app_driver.h"
 #include "app_mqtt.h"
 #include "heating.h"
@@ -116,6 +117,27 @@ void heating_console_register(void)
     d.help = "Log the MQTT config, session and every room topic with its readings";
     d.func = &mqtt_diag_cmd;
     esp_console_cmd_register(&d);
+}
+
+static int help_console_cmd(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    app_console_print_commands();
+    return 0;
+}
+
+static void zc_con_print_help_init(void)
+{
+    /* The console has no `help` of its own: every esp_console_new_repl_*()
+     * blanks the command registry AFTER the blocks have registered theirs
+     * (app_console_print_commands' note has the details), so the product
+     * brings its own. */
+    esp_console_cmd_t con_help_c = {};
+    con_help_c.command = "help";
+    con_help_c.help = "List every console command";
+    con_help_c.func = &help_console_cmd;
+    esp_console_cmd_register(&con_help_c);
 }
 
 /* ── panel init ──────────────────────────────────────────────────────── */
@@ -446,6 +468,7 @@ esp_err_t app_logic_init(void)
 
     bind_adc_buttons();
     heating_console_register();
+    zc_con_print_help_init();
     heating_broker_ready(false);
 
     /* The panel may already have come up before this ran: point the strip at

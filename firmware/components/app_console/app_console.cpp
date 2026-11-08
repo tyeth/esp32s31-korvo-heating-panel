@@ -141,10 +141,6 @@ static esp_err_t start_stdio_repl(const esp_console_repl_config_t *repl_config)
     if (err != ESP_OK) {
         return err;
     }
-    err = esp_console_register_help_command();
-    if (err != ESP_OK) {
-        return err;
-    }
     if (xTaskCreatePinnedToCore(stdio_repl_task, "console_repl", repl_config->task_stack_size,
                                 (void *)repl_config->prompt, repl_config->task_priority,
                                 NULL, repl_config->task_core_id) != pdPASS) {
@@ -208,6 +204,30 @@ esp_err_t app_console_init(void)
 
     ESP_LOGI(TAG, "Console ready. Type 'help' for commands.");
     return ESP_OK;
+}
+
+/* ── The 'help' command ──────────────────────────────────────────────── */
+
+void app_console_print_commands(void)
+{
+    /* The product's `help`: the command list, written out here because every
+     * esp_console_new_repl_*() destroys and re-creates the command registry, so
+     * the commands registered before the REPL is up — the built-ins and every
+     * product command — no longer exist when a person can type, and there is
+     * nothing left to enumerate. Keep this list in step with
+     * register_builtin_cmds() and with the product's own registrations. */
+    printf("  reboot\n        Software reboot\n"
+           "  factory_reset\n        Erase the saved settings and reboot\n"
+           "  mem\n        Heap free / largest block\n"
+           "  uptime\n        Seconds since boot\n"
+           "  chip\n        Chip model, revision, features, MAC\n"
+           "  version\n        Firmware and ESP-IDF version\n"
+           "  log\n        List the log tags and their levels; set one:\n"
+           "        log <tag|*> <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>\n"
+           "  heap\n        Detailed heap stats per region\n"
+           "  heating\n        The four rooms and their topics; heating set <room> <deg C>\n"
+           "  mqtt-diag\n        Broker config, session state and every room topic\n"
+           "  help\n        This list\n");
 }
 
 /* ── Reading input from inside a command ─────────────────────────────── */

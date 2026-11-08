@@ -56,6 +56,11 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    /* Console verbosity before anything else logs: the MSPI and ADC driver tags
+     * make their noise during board bring-up, so the saved level (and the quiet
+     * hold on those tags) is applied ahead of the board manager. */
+    heating_log_level_apply_boot();
+
     /* On-board hardware from the 'esp32_s31_korvo_1' board definition — before the
        drivers, which may ask the board for a handle. */
     ESP_ERROR_CHECK(esp_board_manager_init());

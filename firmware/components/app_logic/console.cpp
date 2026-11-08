@@ -1,6 +1,8 @@
 #include "app_logic.h"
+#include "app_console.h"
 #include "app_driver.h"
 #include "app_config.h"
+#include "heating.h"
 #include <esp_log.h>
 #include "esp_board_manager.h"
 #include "dev_button.h"
@@ -139,23 +141,115 @@ static void zc_con_ver_init(void)
     esp_console_cmd_register(&con_ver_c);
 }
 
-/* behaviors/console_log_level (CON_LOG) */
+/* behaviors/console_log_level (CON_LOG)
+ *
+ * `log` on its own lists the tags this panel logs under and where each one
+ * currently stands (the stored verbosity, the noisy tags held below it, and a
+ * tag named here that has since changed). `log <tag> [LEVEL]` reads one tag,
+ * `log <tag> <LEVEL>` overrides it, and `log * <LEVEL>` is the panel-wide
+ * choice — the same one the settings page offers, saved so it survives a
+ * reboot. */
+static const struct { const char *name; esp_log_level_t level; } k_levels[] = {
+    { "NONE",    ESP_LOG_NONE    },
+    { "ERROR",   ESP_LOG_ERROR   },
+    { "WARN",    ESP_LOG_WARN    },
+    { "INFO",    ESP_LOG_INFO    },
+    { "DEBUG",   ESP_LOG_DEBUG   },
+    { "VERBOSE", ESP_LOG_VERBOSE },
+};
+
+static const char *level_name(esp_log_level_t lvl)
+{
+    for (size_t i = 0; i < sizeof(k_levels) / sizeof(k_levels[0]); i++) {
+        if (k_levels[i].level == lvl) return k_levels[i].name;
+    }
+    return "?";
+}
+
+static bool level_parse(const char *s, esp_log_level_t *out)
+{
+    for (size_t i = 0; i < sizeof(k_levels) / sizeof(k_levels[0]); i++) {
+        if (strcasecmp(s, k_levels[i].name) == 0) {
+            *out = k_levels[i].level;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Every tag this panel writes under, grouped the way a reader looks for them:
+ * the product's own, the framework components, then the driver tags that are
+ * held quiet. A tag added to the firmware belongs in this table. */
+static const struct { const char *name; const char *what; } k_tags[] = {
+    { "app_main",       "boot sequence"                       },
+    { "heating",        "rooms, topics, setpoints"           },
+    { "heating_ui",     "the LCD dashboard"                   },
+    { "heating_web",    "the /settings page"                  },
+    { "heating_voice",  "microphone and spoken commands"      },
+    { "heating_mqtt",   "the product's MQTT handler"          },
+    { "heating_panel",  "buttons, status strip, console cmds" },
+    { "heating_log",    "console verbosity"                   },
+    { "diagnostics",    "boot reason, clock, status line"      },
+    { "control",        "the board buttons"                   },
+    { "button_registry","button handle registry"              },
+    { "zc_behaviors",   "the composed behaviors' entry point" },
+    { "app_audio",      "codec, microphone, recognition"      },
+    { "app_display",    "panel, touch, LVGL"                  },
+    { "app_driver",     "the board's device handles"           },
+    { "app_driver_cb",  "driver callbacks"                    },
+    { "app_mqtt",       "Wi-Fi, broker, MQTT session"         },
+    { "app_console",    "the console REPL"                    },
+    { "app_webui",      "the HTTP server"                     },
+    { "MSPI",           "SPI-mem driver — held at WARN"        },
+    { "ADC",            "ADC oneshot driver — held at WARN"    },
+};
+
+static void log_list(void)
+{
+    printf("console verbosity: %s%s\n", heating_log_level_get(),
+           strcmp(heating_log_level_get(), "VERBOSE") == 0
+               ? "  (everything; 'log * INFO' quiets it)" : "");
+    printf("  %-16s %-8s %s\n", "tag", "level", "what it logs");
+    for (size_t i = 0; i < sizeof(k_tags) / sizeof(k_tags[0]); i++) {
+        esp_log_level_t lvl = esp_log_level_get(k_tags[i].name);
+        printf("  %-16s %-8s %s\n", k_tags[i].name, level_name(lvl), k_tags[i].what);
+    }
+    printf("every other tag (esp-mqtt, Wi-Fi, TLS, LVGL, the board manager …) follows the "
+           "console verbosity above.\n");
+    printf("usage: log | log <tag> | log <tag|*> <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>\n");
+}
+
 static int con_log_cmd(int argc, char **argv)
 {
+    if (argc == 1) {
+        log_list();
+        return 0;
+    }
+    if (argc == 2) {
+        printf("%-16s %s\n", argv[1], level_name(esp_log_level_get(argv[1])));
+        return 0;
+    }
     if (argc != 3) {
-        printf("usage: log <tag|*> <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>\n");
+        printf("usage: log | log <tag> | log <tag|*> <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>\n");
         return 1;
     }
     esp_log_level_t lvl;
-    if      (!strcasecmp(argv[2], "NONE"))    lvl = ESP_LOG_NONE;
-    else if (!strcasecmp(argv[2], "ERROR"))   lvl = ESP_LOG_ERROR;
-    else if (!strcasecmp(argv[2], "WARN"))    lvl = ESP_LOG_WARN;
-    else if (!strcasecmp(argv[2], "INFO"))    lvl = ESP_LOG_INFO;
-    else if (!strcasecmp(argv[2], "DEBUG"))   lvl = ESP_LOG_DEBUG;
-    else if (!strcasecmp(argv[2], "VERBOSE")) lvl = ESP_LOG_VERBOSE;
-    else { printf("unknown level: %s\n", argv[2]); return 1; }
+    if (!level_parse(argv[2], &lvl)) {
+        printf("unknown level: %s (NONE, ERROR, WARN, INFO, DEBUG, VERBOSE)\n", argv[2]);
+        return 1;
+    }
+    if (strcmp(argv[1], "*") == 0) {
+        /* The panel-wide choice: stored, so it is still in force after a
+         * reboot — the same setting the settings page shows. */
+        if (heating_log_level_set(argv[2]) != ESP_OK) {
+            printf("level not saved (NVS)\n");
+            return 1;
+        }
+        printf("console verbosity %s (%s), saved\n", level_name(lvl), argv[2]);
+        return 0;
+    }
     esp_log_level_set(argv[1], lvl);
-    printf("log level for '%s' set to %s\n", argv[1], argv[2]);
+    printf("log level for '%s' set to %s (this boot only)\n", argv[1], argv[2]);
     return 0;
 }
 
@@ -165,8 +259,8 @@ static void zc_con_log_init(void)
      * build runs with -Werror=missing-field-initializers. */
     esp_console_cmd_t con_log_c = {};
     con_log_c.command = "log";
-    con_log_c.help = "Set runtime log level for a tag";
-    con_log_c.hint = "<tag|*> <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>";
+    con_log_c.help = "List the log tags and their levels; set one: log <tag|*> <LEVEL>";
+    con_log_c.hint = "[<tag|*>] [NONE|ERROR|WARN|INFO|DEBUG|VERBOSE]";
     con_log_c.func = &con_log_cmd;
     esp_console_cmd_register(&con_log_c);
 }

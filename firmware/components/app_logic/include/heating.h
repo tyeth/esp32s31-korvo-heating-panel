@@ -123,6 +123,26 @@ int16_t heating_clamp_tenth(int16_t tenth);
 /** Publish {"time": 254} to the zigbee2mqtt permit-join request topic. */
 esp_err_t heating_permit_join(void);
 
+/* ── log verbosity ─────────────────────────────────────────────────────
+ *
+ * One selection for the whole console, kept in NVS so it survives a reboot:
+ * the default level for every tag the panel does not name, plus the noisy
+ * driver/interrupt tags (MSPI, ADC, …) this product runs but never reads.
+ * It is the setting the settings page offers and the `log` command reads.
+ * sdkconfig's VERBOSE default still applies until one is chosen here. */
+
+/** Apply the saved selection (or the build default when none was saved).
+ *  Called at boot, before the board manager starts logging. */
+void heating_log_level_apply_boot(void);
+
+/** The stored verbosity name: "ERROR", "WARN", "INFO", "DEBUG" or
+ *  "VERBOSE" (the default when nothing was saved). */
+const char *heating_log_level_get(void);
+
+/** Store and apply a verbosity (one of the names above). */
+esp_err_t heating_log_level_set(const char *name);
+
+
 /** Ask every configured room topic (TRV and air sensor) for its current state:
  *  zigbee2mqtt only publishes on change, so this is what fills the cards at
  *  boot instead of waiting for a valve to move. Returns how many topics were

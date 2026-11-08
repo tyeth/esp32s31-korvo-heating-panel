@@ -38,6 +38,17 @@ esp_err_t app_console_init(void);
  */
 esp_err_t app_console_register_cmd(const esp_console_cmd_t *cmd);
 
+/**
+ * Print the console's command list (the product's `help`).
+ *
+ * The REPL cannot provide it: esp_console_new_repl_*() de-initializes and
+ * re-creates the command registry, so the commands registered before the REPL
+ * starts — the built-ins included — are gone by the time a person can type.
+ * A product that wants `help` registers one command over this. Keep the list
+ * in step with what the product actually registers.
+ */
+void app_console_print_commands(void);
+
 /* ── Reading input from inside a command ───────────────────────────────
  *
  * A command that needs more than its argv — a guided setup that asks one

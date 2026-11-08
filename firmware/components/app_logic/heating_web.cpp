@@ -41,7 +41,7 @@
 static const char *TAG = "heating_web";
 
 /* The form: one entry per field, the key exactly as the page names it. */
-#define FORM_FIELDS         (5 + HEATING_ROOMS * 3)
+#define FORM_FIELDS         (7 + HEATING_ROOMS * 3)
 #define FORM_VALUE_MAX      (HEATING_TOPIC_MAX + 8)
 
 typedef struct {
@@ -54,7 +54,7 @@ static bool s_submit = false;
 static bool s_permit = false;
 
 static const char *const k_field_keys[FORM_FIELDS] = {
-    "ssid", "pass", "broker", "apass", "ca",
+    "ssid", "pass", "broker", "user", "apass", "ca", "loglevel",
     "r0name", "r0trv", "r0sensor",
     "r1name", "r1trv", "r1sensor",
     "r2name", "r2trv", "r2sensor",
@@ -166,7 +166,7 @@ static void field(const char *key, const char *label, const char *value, const c
     app_webui_send_chunk(line);
 }
 
-static void render_page(bool saved)
+static void render_page(bool was_saved)
 {
     char line[(HEATING_TOPIC_MAX * 6) + 256];
     app_webui_chunk_begin("text/html; charset=utf-8");
@@ -183,7 +183,7 @@ static void render_page(bool saved)
         "border-radius:6px;font-size:15px}button.alt{background:#333;color:#eee;margin-left:8px}"
         "</style></head><body><h1>Heating panel settings</h1>");
 
-    if (saved) {
+    if (was_saved) {
         app_webui_send_chunk("<p style='padding:14px 16px;color:#7fd4a3'>Saved. The panel "
                              "reconnects with these settings — the dashboard fills in within "
                              "a few seconds.</p>");
@@ -218,6 +218,7 @@ static void render_page(bool saved)
                          "mqtts://…:8883 when the add-on's TLS listener is on.</p>");
     field("broker", "Broker URI (mqtts:// for TLS)", app_mqtt_broker_uri(),
           "mqtt://homeassistant.gdenu.fi:1883");
+    field("user", "Broker username", app_mqtt_user(), "empty keeps the current one");
     app_webui_send_chunk("<label>Broker password<br><input name=\"apass\" type=password "
                          "placeholder=\"leave empty to keep the current one\"></label>");
     app_webui_send_chunk("<p style='font-size:12px;color:#888'>TLS is used for an mqtts:// URI. "
@@ -243,6 +244,25 @@ static void render_page(bool saved)
         snprintf(key, sizeof(key), "r%dsensor", i);
         field(key, "Room air-sensor state topic", r->cfg.sensor_topic, "zigbee2mqtt/0x…");
     }
+
+    app_webui_send_chunk("<h2>Console</h2>");
+    app_webui_send_chunk("<label>Log level<br><select name=\"loglevel\" style=\"width:100%;padding:9px"
+                         ";margin-top:4px;background:#1e1e1e;color:#eee;border:1px solid #333"
+                         ";border-radius:6px\">");
+    /* One choice for the whole console: the default level for every tag, with
+     * the driver tags this panel never reads (MSPI, ADC) held at WARN below it.
+     * VERBOSE is the build's own level and the one a field problem is read at. */
+    static const char *const levels[] = { "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE" };
+    for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
+        snprintf(line, sizeof(line), "<option value=\"%s\"%s>%s</option>", levels[i],
+                 strcmp(levels[i], heating_log_level_get()) == 0 ? " selected" : "", levels[i]);
+        app_webui_send_chunk(line);
+    }
+    app_webui_send_chunk("</select></label>");
+    app_webui_send_chunk("<p style='font-size:12px;color:#888'>Saved in flash and applied at "
+                         "once. VERBOSE prints every tag's traffic; the SPI-memory and ADC "
+                         "tags stay quiet below it. The same setting is 'log * <LEVEL>' on "
+                         "the console.</p>");
 
     app_webui_send_chunk("<button type=submit name=submit value=1>Save</button>");
     app_webui_send_chunk("<button class=alt type=submit name=permit value=1 "
@@ -321,25 +341,30 @@ static void apply_form(void)
      * during/right after the restart already sees the new table. */
     heating_save_cfg();
 
-    if (form_get("apass")[0] || form_get("ca")[0]) {
-        /* A new broker password or CA: the session is rebuilt around it. */
-        const char *pass = form_get("apass")[0] ? form_get("apass") : app_mqtt_user_password();
-        esp_err_t err = app_mqtt_set_broker(form_get("broker")[0] ? form_get("broker")
-                                                                 : app_mqtt_broker_uri(),
-                                           app_mqtt_user(), pass);
+    /* The broker credentials and the console's verbosity. Each empty password
+     * keeps the stored one, the username is shown as stored, and the level is
+     * the one the select above came in with. */
+    const char *broker = form_get("broker")[0] ? form_get("broker") : app_mqtt_broker_uri();
+    const char *user   = form_get("user")[0]   ? form_get("user")   : app_mqtt_user();
+    const char *pass   = form_get("apass")[0]  ? form_get("apass")  : app_mqtt_user_password();
+    if (strcmp(broker, app_mqtt_broker_uri()) != 0 || strcmp(user, app_mqtt_user()) != 0 ||
+        strcmp(pass, app_mqtt_user_password()) != 0) {
+        esp_err_t err = app_mqtt_set_broker(broker, user, pass);
         if (err != ESP_OK) ESP_LOGW(TAG, "broker not saved: %s", esp_err_to_name(err));
+    }
+    if (form_get("ca")[0]) {
         /* "-" clears a pinned CA (the PEM itself may contain '-' characters, so
          * only a lone one is the sentinel — the same rule the broker password
          * uses in mqtt-setup). */
         if (strcmp(form_get("ca"), "-") == 0) {
             app_mqtt_set_broker_ca(NULL);
-        } else if (form_get("ca")[0]) {
+        } else {
             app_mqtt_set_broker_ca(form_get("ca"));
         }
-    } else if (form_get("broker")[0]) {
-        esp_err_t err = app_mqtt_set_broker(form_get("broker"), app_mqtt_user(),
-                                           app_mqtt_user_password());
-        if (err != ESP_OK) ESP_LOGW(TAG, "broker not saved: %s", esp_err_to_name(err));
+    }
+
+    if (form_get("loglevel")[0] && heating_log_level_set(form_get("loglevel")) != ESP_OK) {
+        ESP_LOGW(TAG, "log level not saved: %s", form_get("loglevel"));
     }
 
     if (form_get("ssid")[0]) {
