@@ -277,8 +277,19 @@ static void net_task(void *arg)
         net_event_t ev = {};
         if (xQueueReceive(s_net_queue, &ev, portMAX_DELAY) != pdTRUE) continue;
         if (ev.base == WIFI_EVENT && ev.id == WIFI_EVENT_STA_START) {
-            /* The station interface is up: join. */
-            esp_wifi_connect();
+            /* The station interface is up: join — but only when the radio is in
+             * station mode. The onboarding AP starts the radio too, and there is
+             * no station to join then (the driver answers ESP_ERR_WIFI_MODE, so
+             * it is also not a meaningful failure to log). */
+            wifi_mode_t mode;
+            if (esp_wifi_get_mode(&mode) != ESP_OK || mode == WIFI_MODE_NULL || mode == WIFI_MODE_AP) {
+                ESP_LOGD(TAG, "station start while not in station mode — nothing to join");
+                continue;
+            }
+            esp_err_t join_err = esp_wifi_connect();
+            if (join_err != ESP_OK) {
+                ESP_LOGW(TAG, "Wi-Fi join refused: %s", esp_err_to_name(join_err));
+            }
             continue;
         }
         if (ev.base == IP_EVENT && ev.id == IP_EVENT_STA_GOT_IP) {
@@ -750,11 +761,17 @@ esp_err_t app_mqtt_init(void)
 
     /* Our own task handles the network events (connect, disconnect log +
      * retry, broker start); the loop's handler only queues them — see
-     * net_task(). The queue is the handler's data, so nothing has to be global
-     * for the dispatch to find it. */
-    if (s_net_task == NULL) {
+     * net_task(). The queue is independent of the task's lifetime, so a failed
+     * task creation still leaves a valid (if never-drained) queue behind the
+     * registered handlers rather than a NULL. */
+    if (s_net_queue == NULL) {
         s_net_queue = xQueueCreate(8, sizeof(net_event_t));
-        if (s_net_queue == NULL || xTaskCreate(net_task, "mqtt_net", 4096, NULL, 5, &s_net_task) != pdPASS) {
+        if (s_net_queue == NULL) {
+            ESP_LOGE(TAG, "network event queue not created — Wi-Fi/IP events unhandled");
+        }
+    }
+    if (s_net_queue != NULL && s_net_task == NULL) {
+        if (xTaskCreate(net_task, "mqtt_net", 4096, NULL, 5, &s_net_task) != pdPASS) {
             ESP_LOGE(TAG, "network event task not created — Wi-Fi events unhandled");
             s_net_task = NULL;
         }
