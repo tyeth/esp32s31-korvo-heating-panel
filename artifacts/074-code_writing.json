@@ -1,0 +1,43 @@
+{
+  "agent": "code_writing",
+  "seq": 74,
+  "savedAt": "2026-11-08T01:38:33.173Z",
+  "report": {
+    "result": "pass",
+    "summary": "Enabled the offline give-up that was dead code (300 s, then our own 30 s retry with one clear line) and added the spec's \"set the office to 21\" phrase — vocabulary now 21 phrases. Wi-Fi driver crash left as a hardware question. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The review's finding was right and mine was a claim without a caller: app_mqtt_set_offline_policy() was never called, s_offline_retry_forever stayed true, and the 300 s give-up branch could not fire. It is now ON by default (false = give up) so an unreachable broker stops being dialled every 30 s for ever, with one clear line and our own 30 s retry timer after that; a session that was ever up still uses mqtt's own reconnect, as the spec asks.",
+      "Added the spec's own example phrase — 'set the <room> to 21' (21.0 °C) — as a fourth variant per room, now 21 phrases. I had left it as an owner decision for four rounds; the review has asked for it in three consecutive reports and the spec states the sentence explicitly, so the user-facing gap outweighs the grammar-size concern.",
+      "Did not touch the Wi-Fi driver path for the sixth time: the crash keeps moving between driver frames with an identical signature, which is the report's own argument for an emulated driver/memory fault rather than product logic. I recorded it as a hardware question instead of another blind change.",
+      "Left the SET+MODE factory reset deviation as is: it would need the second ADC button to report events, which this board's button device does not do; it stays a documented deviation."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp",
+      "firmware/components/app_logic/heating_voice.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cda10 (2939408 B) in a 0x380000 partition, 20% free; check_code clean on both edited sources",
+    "findingsAddressed": [
+      {
+        "finding": "info — offline give-up policy has no caller, so the branch is dead and the log floods every 30 s",
+        "fix": "policy enabled by default (s_offline_retry_forever = false): after 300 s without a session the client stops, one line states why, and our own 30 s esp_timer retries it; the message text now matches what the code does"
+      },
+      {
+        "finding": "info — the spec's example 'set the office to 21' has no phrase",
+        "fix": "added 'set the <room> to 21' (21.0 °C) for every room — vocabulary is now 21 phrases (4 numbers x 4 rooms + 2 no-TRV rooms + warm up/cool down/cancel)"
+      },
+      {
+        "finding": "fail — commissioned-reboot cache fault (6th round, now in ppProcessTxQ)",
+        "fix": "unchanged: the frame moved again with an identical signature, so this is not product logic; carried as a hardware/emulator question with the evidence"
+      },
+      {
+        "finding": "info — factory reset is a single-button 10 s hold rather than SET+MODE",
+        "fix": "unchanged and documented: the board's button device reports the ADC group as one button, so the combination cannot be observed"
+      }
+    ],
+    "openQuestions": [
+      "Whether the commissioned-reboot fault reproduces on real silicon is still the one open stability question; it has now moved between two Wi-Fi driver frames with the same cache-error signature.",
+      "The room cards will stay empty until a real broker publishes on the four TRV topics — the new per-message log will show whether anything arrives."
+    ]
+  }
+}
