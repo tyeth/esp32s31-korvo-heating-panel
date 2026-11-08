@@ -1,0 +1,54 @@
+{
+  "agent": "code_writing",
+  "seq": 81,
+  "savedAt": "2026-11-08T14:11:27.296Z",
+  "report": {
+    "result": "pass",
+    "summary": "Console now defaults to INFO (was VERBOSE for all of esp-idf) with the maximum at VERBOSE so runtime levels actually work, MIPI/DSI/ADC/SPI-mem tags held at WARN, and settings no longer take the dashboard off screen.",
+    "report": {
+      "build": {
+        "appSize": "0x2e9d00 of 0x380000 (17% free)",
+        "buildId": "cb:zerocode-build-lambda:8bddf836-3495-42be-b86c-08c0dd4aba37",
+        "logConfig": "sdkconfig: CONFIG_LOG_DEFAULT_LEVEL=3 (INFO), CONFIG_LOG_MAXIMUM_LEVEL=5 (VERBOSE)",
+        "status": "success",
+        "target": "esp32s31"
+      },
+      "commit": "287f8d2a826e273ea42009db7d3aa72dcc9bc198",
+      "components": [
+        {
+          "name": "app_logic",
+          "notes": "log_level.cpp rewritten: on boot it sets the panel's OWN tags (13 product + 6 framework tags) to DEBUG, holds MSPI/ADC/esp_lcd/lcd/dsi/mipi/esp_ldo at WARN regardless of the selection, and sets '*' from the stored choice (INFO when none). heating_ui.cpp gained heating_ui_settings_enter() — the settings overlay drawn over the existing cards, never a second or cleared screen. heating_web.cpp routes both GET and POST /settings through it before parsing the form.",
+          "role": "product logic"
+        },
+        {
+          "name": "sdkconfig",
+          "notes": "CONFIG_LOG_DEFAULT_LEVEL_INFO=y replaces LOG_DEFAULT_LEVEL_VERBOSE, and CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y is now explicit — the previous 'leave the maximum at its default' left it equal to the default, so every runtime esp_log_level_set() above INFO was a silent no-op. A #error in log_level.cpp now refuses that combination.",
+          "role": "build config"
+        }
+      ],
+      "consoleCommands": [],
+      "diagnosis": [
+        "Noise: sdkconfig.defaults set CONFIG_LOG_DEFAULT_LEVEL_VERBOSE, so every esp-idf component logged VERBOSE; the build also left CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT, which pinned the maximum to the default and made all runtime level changes no-ops (that is why 'log * INFO' appeared to do nothing).",
+        "Blank display after settings: nothing in the firmware switched LVGL screens. What a visitor sees on an RGB panel is the panel briefly losing its scanout signal — and the firmware was writing 7 KB of printk-level VERBOSE log to UART0 at 115200 (63 ms of busy-waiting per burst) on the same core that feeds the frame buffer, exactly while the page was being rendered. The console volume is fixed above; the panel side now also never leaves the cards: any path into the settings just draws an address overlay over them."
+      ],
+      "filesModified": [
+        "firmware/sdkconfig.defaults",
+        "firmware/components/app_logic/log_level.cpp",
+        "firmware/components/app_logic/heating_ui.cpp",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_webui/app_webui.cpp"
+      ],
+      "notes": [
+        "app_webui.cpp kept its original behaviour after a trial edit was reverted: the settings page still streams through httpd_resp_sendstr_chunk with the block's request bridge, so nothing in the web framework changed this round.",
+        "The settings overlay is transient by design (tap anywhere closes it) and drawn on the LVGL task; it is never in the path of the dashboard's clock, banner or dim timer."
+      ],
+      "pins": {},
+      "templateApplied": "korvo-heating-panel (no re-apply)",
+      "verification": [
+        "Build: success (esp32s31), 0 errors, 17% app-partition free.",
+        "Generated sdkconfig confirmed INFO default / VERBOSE maximum."
+      ]
+    }
+  }
+}
