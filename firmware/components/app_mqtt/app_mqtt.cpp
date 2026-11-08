@@ -63,9 +63,32 @@ static bool s_offline_reported = false;
  * was started (to measure how long it has been trying). */
 #define OFFLINE_GIVE_UP_S 300
 #define OFFLINE_RETRY_S   30
-static bool     s_offline_retry_forever = true;
-static uint32_t s_offline_retry_delay_s = OFFLINE_GIVE_UP_S;
+static esp_timer_handle_t s_retry_timer = NULL;
+static bool     s_offline_retry_forever = false;
+static uint32_t s_offline_retry_delay_s = OFFLINE_RETRY_S;
 static int64_t  s_client_started_ms = 0;
+
+void app_mqtt_set_offline_policy(bool retry_forever, uint32_t delay_s)
+{
+    s_offline_retry_forever = retry_forever;
+    s_offline_retry_delay_s = delay_s ? delay_s : OFFLINE_RETRY_S;
+}
+
+bool app_mqtt_session_up(void)
+{
+    return s_connected;
+}
+
+/* A broker that never answered is retried on our own calm cadence, not on the
+ * client's tight loop: one attempt every OFFLINE_RETRY_S. */
+static void offline_retry_cb(void *arg)
+{
+    (void)arg;
+    if (s_client != NULL && !s_connected) {
+        ESP_LOGI(TAG, "retrying the broker");
+        esp_mqtt_client_reconnect(s_client);
+    }
+}
 
 
 
@@ -201,10 +224,20 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t event_i
                 if (!s_offline_reported) {
                     s_offline_reported = true;
                     ESP_LOGW(TAG, "broker unreachable for %ld s — retrying every %u s "
-                                  "(press BOOT long or run mqtt-broker to retry now)",
+                                  "(mqtt-broker or the settings page retries at once)",
                              (long)up_s, (unsigned)s_offline_retry_delay_s);
                 }
                 esp_mqtt_client_stop(s_client);
+                if (s_retry_timer == NULL) {
+                    esp_timer_create_args_t args = {};
+                    args.callback = &offline_retry_cb;
+                    args.name = "mqtt_offline_retry";
+                    esp_timer_create(&args, &s_retry_timer);
+                }
+                if (s_retry_timer) {
+                    esp_timer_stop(s_retry_timer);
+                    esp_timer_start_periodic(s_retry_timer, (uint64_t)s_offline_retry_delay_s * 1000000ULL);
+                }
             } else {
                 ESP_LOGW(TAG, "MQTT disconnected — esp-mqtt reconnects on its own");
             }
@@ -261,21 +294,9 @@ static void mqtt_start_client(void)
 /* A start requested from the event path waits this long, so the client comes
  * up once the association's event storm has passed. */
 #define NET_START_DELAY_S 1
-static esp_timer_handle_t s_retry_timer = NULL;
 
 static void net_start_cb(void *arg);
 static void mqtt_start_client(void);
-
-void app_mqtt_set_offline_policy(bool retry_forever, uint32_t delay_s)
-{
-    s_offline_retry_forever = retry_forever;
-    s_offline_retry_delay_s = delay_s ? delay_s : 1;
-}
-
-bool app_mqtt_session_up(void)
-{
-    return s_connected;
-}
 
 static void wifi_retry_cb(void *arg)
 {

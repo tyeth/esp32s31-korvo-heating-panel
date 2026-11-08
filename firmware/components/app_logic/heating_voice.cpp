@@ -48,7 +48,7 @@ static const char *TAG = "heating_voice";
  * to do and which number was said — the words after the room are what the user
  * actually said, not a digit recovered from text. */
 #define VOICE_ID_SET_BASE      1600
-#define VOICE_ID_SET_VARIANTS  3
+#define VOICE_ID_SET_VARIANTS  4
 #define VOICE_ID_NO_TRV_BASE   (VOICE_ID_SET_BASE + HEATING_ROOMS * VOICE_ID_SET_VARIANTS)
 #define VOICE_ID_NO_TRV_COUNT  2
 #define VOICE_ID_WARM_UP       (VOICE_ID_NO_TRV_BASE + VOICE_ID_NO_TRV_COUNT)
@@ -63,10 +63,11 @@ static const char *TAG = "heating_voice";
 static const char *const k_unheated[VOICE_ID_NO_TRV_COUNT] = { "Kitchen", "Bedroom" };
 
 /* The spoken numbers. Each phrase says the target it means, so the published
- * value is exactly what the user said; the three are the living-room values
- * from the spec's examples, said the three ways a person says them. */
+ * value is exactly what the user said — including the spec's own example,
+ * "set the office to 21". */
 static const int16_t k_variant_tenth[VOICE_ID_SET_VARIANTS] = {
     200,   /* "set the <room> to 20"        */
+    210,   /* "set the <room> to 21"        */
     215,   /* "set the <room> to 21.5"      */
     210,   /* "<room> 21 and a half"        */
 };
@@ -96,6 +97,7 @@ static void phrase_text(int i, char *buf, size_t len)
      * as English words in the boot log. */
     static const char *const k_variants[VOICE_ID_SET_VARIANTS] = {
         "set the %s to 20",
+        "set the %s to 21",
         "set the %s to 21.5",
         "%s 21 and a half",
     };
