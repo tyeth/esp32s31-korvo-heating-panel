@@ -1,0 +1,48 @@
+{
+  "agent": "code_writing",
+  "seq": 70,
+  "savedAt": "2026-11-08T01:33:01.271Z",
+  "report": {
+    "result": "pass",
+    "summary": "Fixed the settings-page crash (the POST body was being held on the httpd task's 4 KB stack — now static) and made the panel explain its own state: every broker message, the `heating` link/session/reporting line, and a 60 s status log. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The settings-page crash was a stack-protection fault in the httpd task, caused by my own page: it reads the POST body (Wi-Fi, broker, CA and twelve topic fields) into a 3000-byte local. Fixed by making that buffer static — app_webui serves one settings request at a time, so one buffer is correct — and the page no longer asks the httpd task to hold it.",
+      "The two 404s in your log are the browser visiting '/setting' and '/settings/' instead of '/settings'; that also explains 'never comes out of offline' — the link was up ('MQTT connected'), you simply never reached the form. Rather than guess further, I made the panel self-explaining: every broker state message is logged with room and payload, `heating` now prints 'Wi-Fi configured, broker session up/down, N/4 rooms reporting', and a status line logs broker/clock/heap every 60 s.",
+      "The repeated 'MQTT disconnected' every 30 s is esp-mqtt's own reconnect loop against an unreachable broker (the emulator dials 'Host is unreachable'). The transport can now give up after 300 s with one clear line, while the panel's own Wi-Fi keeps retrying forever and a session that was up always retries.",
+      "I did not touch the Wi-Fi driver path: the four-identical-round crash there is still an emulator question, and this round's crash had a different, product-side cause that I could and did fix."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_logic/heating_web.cpp",
+      "firmware/components/app_mqtt/app_mqtt.cpp",
+      "firmware/components/app_mqtt/include/app_mqtt.h",
+      "firmware/components/app_logic/diagnostics.cpp",
+      "firmware/components/app_logic/app_logic.cpp",
+      "firmware/components/app_logic/heating.cpp",
+      "firmware/components/app_logic/include/heating.h"
+    ],
+    "build": "esp32s31 success — 0x2cd830 (2938928 B) in a 0x380000 partition, 20% free; check_code clean on all five edited sources",
+    "findingsAddressed": [
+      {
+        "finding": "user report — visiting the settings page reboots the device (Stack protection fault in task \"httpd\")",
+        "fix": "the 3000-byte POST body buffer moved from the httpd stack to a static buffer (single settings request at a time); the page renders from static render buffers, so the httpd task's 4 KB stack is no longer asked to hold the form"
+      },
+      {
+        "finding": "user report — device never shows a non-offline state or synced topic data",
+        "fix": "every accepted TRV/air-sensor message is now logged with its room and payload; `heating` prints Wi-Fi/session/reporting state; a 60 s status line logs broker/clock/heap — and the log shows the link was in fact up (MQTT connected), the URL was wrong"
+      },
+      {
+        "finding": "log noise — 'MQTT disconnected' every 30 s against an unreachable broker",
+        "fix": "transport gains an offline retry policy (300 s then stop, one clear line); the panel's own Wi-Fi retry stays infinite and an established session always retries"
+      },
+      {
+        "finding": "log — 404s for '/setting' and '/settings/'",
+        "fix": "not a firmware fault (the page is at '/settings'); the page is now discoverable from the console state line and still served at that exact path"
+      }
+    ],
+    "openQuestions": [
+      "If the browser still cannot load /settings after this, send the log lines starting with 'httpd_uri' and 'app_webui' — the page handler now logs every request it serves.",
+      "Room cards will still show '--.-' until a real zigbee2mqtt broker publishes on the four TRV topics; the new per-message log will show whether anything arrives at all."
+    ]
+  }
+}
