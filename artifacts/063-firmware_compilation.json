@@ -1,0 +1,54 @@
+{
+  "agent": "firmware_compilation",
+  "seq": 63,
+  "savedAt": "2026-11-08T00:01:05.563Z",
+  "report": {
+    "result": "pass",
+    "summary": "Rebuild succeeded for esp32s31; new -Wmissing-field-initializers warnings in app_mqtt.cpp (non-fatal).",
+    "report": {
+      "binaryPath": "firmware/build/zerocode_ai_firmware.bin",
+      "board": "esp32-s31-korvo-1",
+      "buildId": "cb:zerocode-build-lambda:4302fe2d-f870-44f1-b6d5-e84fadf01216",
+      "codeWarnings": [
+        {
+          "message": "missing initializer for member 'esp_timer_create_args_t::arg' / 'dispatch_method' / 'skip_unhandled_events' [-Wmissing-field-initializers]",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 305,
+          "function": "net_task"
+        },
+        {
+          "message": "missing initializer for member 'esp_timer_create_args_t::arg' / 'dispatch_method' / 'skip_unhandled_events' [-Wmissing-field-initializers]",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 323,
+          "function": "net_task"
+        },
+        {
+          "message": "missing initializer for member 'esp_timer_create_args_t::arg' / 'dispatch_method' / 'skip_unhandled_events' [-Wmissing-field-initializers] (esp_timer_create_args_t args = { .callback = &ap_stop_cb, .name = \"mqtt_ap_idle\" })",
+          "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+          "line": 473,
+          "function": "app_mqtt_ap_start"
+        }
+      ],
+      "exitCode": 0,
+      "firmwareSize": "0x2cd410 (2937872 B)",
+      "flashUsage": "app partition 0x380000 (3670016 B); 0xb2bf0 (732144 B) = 20% free; bootloader 0x5700 (22272 B), 9% free",
+      "mergedImage": "firmware/build/merged_flash.bin (0xa092c7 bytes, flash at 0x0)",
+      "notes": [
+        "Incremental rebuild: app_mqtt.cpp recompiled -> libapp_mqtt.a relinked (7 ninja steps, 8.4 s), ELF linked, image created, partition size check passed.",
+        "app_mqtt.cpp uses partial designated initialisers for esp_timer_create_args_t; the omitted fields default to zero/null, which is the normal ESP-IDF intent (default dispatch method, no arg). Harmless, but noisy — zero-initialising the struct ({}) removes all nine warnings.",
+        "Binary grew by 224 B vs the previous build (0x2cd330 -> 0x2cd410); partition headroom still 20%.",
+        "eFuse virtualization verified in sdkconfig (CONFIG_EFUSE_VIRTUAL=y).",
+        "Ship artifacts produced: merged_flash.bin plus delta upload (14 files)."
+      ],
+      "previousBuildId": "cb:zerocode-build-lambda:3d5a6d26-8e69-4134-a202-a7d8dcdd4a56",
+      "ramUsage": "not reported in build output (no static DRAM/IRAM summary line in log tail)",
+      "status": "success",
+      "target": "esp32s31",
+      "warnings": [
+        "PROJECT CODE warnings (x9, new this round) — -Wmissing-field-initializers on esp_timer_create_args_t in firmware/components/app_mqtt/app_mqtt.cpp at lines 305 (net_task), 323 (net_task) and 473 (app_mqtt_ap_start): omitted members 'arg', 'dispatch_method', 'skip_unhandled_events'. Not an error and behaviour is correct (zero-init defaults), but flagging since it is the first time these have appeared.",
+        "Environment-level, non-fatal: 'Warning: Failed to import extension .../managed_components/espressif__esp_board_manager/idf_ext.py: cannot import name 'AmbiguousBoardSelectorError'' — version skew between the managed extension and the system board-manager generator; config generation still succeeded.",
+        "Board Manager reminder: board_manager.defaults has higher priority than the project sdkconfig.defaults."
+      ]
+    }
+  }
+}
