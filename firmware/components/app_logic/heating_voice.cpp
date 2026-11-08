@@ -19,10 +19,12 @@
  *
  *   "set the <room> to <5..30>"                       every room, whole degrees
  *   "<room> <15..25>"                                 the short form, home range
- *   "set the <room> to <15..24> and a half"           halves, both forms
- *   "<room> <15..24> and a half"
+ *   "set the <room> to <15..24> and a half"           halves, both forms,
+ *   "<room> <15..24> and a half"                      said either way:
+ *   "set the <room> to <15..24> point five"           "… and a half" or
+ *   "<room> <15..24> point five"                      "… point five"
  *   "set all rooms to <5..30>"                        the whole house at once
- *   "set the <roomA> and the <roomB> to <17..23>"     two rooms, either order
+ *   "set the <roomA> and the <roomB> to <18..21>"     two rooms, either order
  *   "warm up [the <room>]" / "cool down [the <room>]" ±1 °C
  *   "cancel" / "stop"                                 nothing is published
  *   "set the kitchen|bedroom to 20"                   "… has no smart TRV"
@@ -45,19 +47,21 @@
 static const char *TAG = "heating_voice";
 
 #define VOICE_ID_SET_BASE   1600
-#define VOICE_MAX_PHRASES   360
+#define VOICE_MAX_PHRASES   400   /* = ESP_MN_MAX_PHRASE_NUM */
 #define VOICE_PHRASE_MAX    64
 
 /* The whole-degree ranges each phrase family enumerates. Together they stay
- * under MultiNet's 400-phrase ceiling (352 with four rooms). */
+ * under MultiNet's 400-phrase ceiling (396 with four rooms): the halves say
+ * "and a half" or "point five" in both the full and the bare form, paid for
+ * by a narrower two-room conjunction range. */
 #define FULL_MIN   5     /* "set the <room> to N"            */
 #define FULL_MAX  30
 #define BARE_MIN  15     /* "<room> N"                       */
 #define BARE_MAX  25
-#define HALF_MIN  15     /* "… N and a half"                 */
+#define HALF_MIN  15     /* "… N and a half" / "… N point five" */
 #define HALF_MAX  24
-#define PAIR_MIN  17     /* "set the A and the B to N"       */
-#define PAIR_MAX  23
+#define PAIR_MIN  18     /* "set the A and the B to N"       */
+#define PAIR_MAX  21
 
 /* The rooms that exist in the house but carry no smart TRV — naming one gets
  * "Kitchen has no smart TRV" instead of silence (spec failureModes). */
@@ -67,8 +71,10 @@ static const char *const k_unheated[VOICE_NO_TRV_COUNT] = { "Kitchen", "Bedroom"
 typedef enum : uint8_t {
     ACT_SET,          /* room_a -> tenth                         */
     ACT_SET_HALF,     /* same, said "… and a half"               */
+    ACT_SET_P5,       /* same, said "… point five"               */
     ACT_SET_BARE,     /* "<room> N"                              */
     ACT_SET_BARE_HALF,
+    ACT_SET_BARE_P5,
     ACT_SET_ALL,      /* every room -> tenth                     */
     ACT_SET_PAIR,     /* room_a and room_b -> tenth              */
     ACT_WARM,         /* room_a (or the selected room when -1) +1 °C */
@@ -115,11 +121,17 @@ static void phrase_text(int i, char *buf, size_t len)
         case ACT_SET_HALF:
             snprintf(buf, len, "set the %s to %d and a half", room_name(p->room_a), deg);
             break;
+        case ACT_SET_P5:
+            snprintf(buf, len, "set the %s to %d point five", room_name(p->room_a), deg);
+            break;
         case ACT_SET_BARE:
             snprintf(buf, len, "%s %d", room_name(p->room_a), deg);
             break;
         case ACT_SET_BARE_HALF:
             snprintf(buf, len, "%s %d and a half", room_name(p->room_a), deg);
+            break;
+        case ACT_SET_BARE_P5:
+            snprintf(buf, len, "%s %d point five", room_name(p->room_a), deg);
             break;
         case ACT_SET_ALL:
             snprintf(buf, len, "set all rooms to %d", deg);
@@ -170,6 +182,8 @@ static void build_table(void)
         for (int d = HALF_MIN; d <= HALF_MAX; d++) {
             table_push(ACT_SET_HALF,      r, -1, (int16_t)(d * 10 + 5));
             table_push(ACT_SET_BARE_HALF, r, -1, (int16_t)(d * 10 + 5));
+            table_push(ACT_SET_P5,        r, -1, (int16_t)(d * 10 + 5));
+            table_push(ACT_SET_BARE_P5,   r, -1, (int16_t)(d * 10 + 5));
         }
     }
     for (int d = FULL_MIN; d <= FULL_MAX; d++) table_push(ACT_SET_ALL, -1, -1, (int16_t)(d * 10));
@@ -224,6 +238,33 @@ static heating_req_result_t request_one(int idx, int16_t tenth)
     return heating_request_target(idx, tenth);
 }
 
+/* What the recogniser matched, quoted on the outcome banner so the wall says
+ * what it HEARD, not only what it did. Set per command, consumed by the next
+ * banner. Both writers run on the audio detect task, in order. */
+static char s_heard[72] = {0};
+static int  s_heard_pct = 0;
+
+void heating_voice_heard(const char *text, int percent)
+{
+    snprintf(s_heard, sizeof(s_heard), "%s", text ? text : "");
+    s_heard_pct = percent;
+}
+
+/* The outcome, under the heard phrase when there is one: two lines on the
+ * banner, '"office 21" (97%)' over 'Office -> 21.0C'. */
+static void banner_outcome(const char *outcome)
+{
+    char msg[150];
+    if (s_heard[0]) {
+        snprintf(msg, sizeof(msg), "\"%s\" (%d%%)\n%s", s_heard, s_heard_pct, outcome);
+        s_heard[0] = '\0';
+    } else {
+        snprintf(msg, sizeof(msg), "%s", outcome);
+    }
+    heating_ui_banner(msg);
+    heating_ui_poke();
+}
+
 static void banner_set(const char *what, int16_t tenth)
 {
     char msg[64];
@@ -232,8 +273,7 @@ static void banner_set(const char *what, int16_t tenth)
      * when the TRV reports back. */
     int16_t t = heating_clamp_tenth(tenth);
     snprintf(msg, sizeof(msg), "%s -> %d.%d\xC2\xB0" "C", what, (int)(t / 10), (int)((t % 10 + 10) % 10));
-    heating_ui_banner(msg);
-    heating_ui_poke();
+    banner_outcome(msg);
 }
 
 static void report_result(heating_req_result_t res, const char *what, int16_t tenth)
@@ -243,10 +283,10 @@ static void report_result(heating_req_result_t res, const char *what, int16_t te
             banner_set(what, tenth);
             break;
         case HEATING_REQ_ALREADY_SET:
-            heating_ui_banner("Already set");
+            banner_outcome("Already set");
             break;
         case HEATING_REQ_OFFLINE:
-            heating_ui_banner("Offline - controls disabled");
+            banner_outcome("Offline - controls disabled");
             heating_ui_rejected();
             break;
         default:
@@ -275,8 +315,10 @@ void heating_voice_apply_command(int phrase_id)
     switch (p->act) {
         case ACT_SET:
         case ACT_SET_HALF:
+        case ACT_SET_P5:
         case ACT_SET_BARE:
         case ACT_SET_BARE_HALF:
+        case ACT_SET_BARE_P5:
             apply(p->room_a, p->tenth);
             break;
         case ACT_SET_ALL: {
@@ -312,12 +354,12 @@ void heating_voice_apply_command(int phrase_id)
         }
         case ACT_CANCEL:
         case ACT_STOP:
-            heating_ui_banner("Cancelled");
+            banner_outcome("Cancelled");
             break;
         case ACT_NO_TRV: {
             char msg[64];
             snprintf(msg, sizeof(msg), "%s has no smart TRV", k_unheated[p->room_a]);
-            heating_ui_banner(msg);
+            banner_outcome(msg);
             break;
         }
         default:
@@ -332,7 +374,7 @@ void heating_voice_apply_command(int phrase_id)
 void heating_voice_print_vocabulary(void)
 {
     ESP_LOGI(TAG, "voice vocabulary: %d phrases — \"set the <room> to <%d..%d>\", "
-                  "\"<room> <%d..%d>\", \"... <%d..%d> and a half\", "
+                  "\"<room> <%d..%d>\", \"... <%d..%d> and a half | point five\", "
                   "\"set all rooms to <N>\", \"set the <A> and the <B> to <%d..%d>\", "
                   "\"warm up / cool down [the <room>]\", \"cancel\", \"stop\"",
              s_table_n, FULL_MIN, FULL_MAX, BARE_MIN, BARE_MAX, HALF_MIN, HALF_MAX,
@@ -354,5 +396,6 @@ void heating_voice_on_event(int listening)
 void heating_voice_not_understood(void)
 {
     heating_ui_listening(false);
-    heating_ui_banner("Sorry, not understood");
+    s_heard[0] = '\0';
+    heating_ui_banner("Sorry, not understood\ntry: set the office to 21");
 }

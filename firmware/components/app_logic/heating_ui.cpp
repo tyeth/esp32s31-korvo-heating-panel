@@ -44,7 +44,7 @@ static const char *TAG = "heating_ui";
 #define GRID_GAP_Y    16
 #define FOOTER_H      44
 
-#define BANNER_MS     3000
+#define BANNER_MS     4500
 #define LISTEN_MS     10000
 #define DIM_AFTER_MS  (2 * 60 * 1000)
 
@@ -75,7 +75,7 @@ static volatile bool s_banner_dirty = false;
 static volatile bool s_listening = false;
 static volatile int  s_listen_s = 0;
 
-static char         s_banner_text[64] = {0};
+static char         s_banner_text[160] = {0};   /* holds a quoted heard phrase + outcome */
 static int64_t      s_banner_until = 0;
 static bool         s_rejecting = false;
 static int64_t      s_reject_until = 0;
@@ -357,9 +357,14 @@ static void build_screen(void)
 
     s_banner = make_label(s_screen, &lv_font_montserrat_20, lv_color_hex(0x000000));
     lv_obj_set_style_bg_color(s_banner, lv_color_hex(0xE0A06A), 0);
+    /* Labels default to a TRANSPARENT background: without this line the
+     * orange pill never painted and the black text sat invisibly on the
+     * near-black screen — every voice banner was drawn and never seen. */
+    lv_obj_set_style_bg_opa(s_banner, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(s_banner, 16, 0);
     lv_obj_set_style_pad_ver(s_banner, 8, 0);
     lv_obj_set_style_radius(s_banner, 8, 0);
+    lv_obj_set_style_text_align(s_banner, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_banner, LV_ALIGN_TOP_MID, 0, GRID_Y * 2 + CARD_H * 2 + GRID_GAP_Y - 30);
     lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
 
@@ -458,6 +463,7 @@ static void paint_banner(void)
     if (s_banner_text[0] != 0 && left > 0) {
         lv_label_set_text(s_banner, s_banner_text);
         lv_obj_remove_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_banner);     /* above whatever repainted since */
     } else {
         lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
     }

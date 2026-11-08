@@ -192,6 +192,9 @@ static void audio_detect_task(void *arg)
             if (mn && mn->num > 0) {
                 ESP_LOGI(TAG, "command phrase %d (%.0f%%): \"%s\"", mn->phrase_id[0],
                          mn->prob[0] * 100, mn->string);
+                /* The heard words go to the screen with the outcome: feedback
+                 * that only reached the serial log helped nobody at the wall. */
+                heating_voice_heard(mn->string, (int)(mn->prob[0] * 100));
                 /* One press, one request: the window is over as soon as the
                  * phrase is in, whatever opened it. */
                 s_btn_window = false;

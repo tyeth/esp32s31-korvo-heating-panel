@@ -225,6 +225,11 @@ void heating_web_install(void);
 /** The voice listening-window transitions from the audio framework. */
 void heating_voice_on_event(int listening);
 
+/** The recogniser's raw result (the matched phrase text and its confidence,
+ *  0..100), handed over just before the command id: the outcome banner quotes
+ *  it, so the screen says WHAT was heard, not only what happened. */
+void heating_voice_heard(const char *text, int percent);
+
 /* ── persistence ─────────────────────────────────────────────────────── */
 
 /** Save the room table and every remembered target. */
