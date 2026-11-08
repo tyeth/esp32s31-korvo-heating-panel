@@ -43,8 +43,12 @@ static void heating_console_usage(void)
         printf("  %d  %-12s target %d.%d  %s\n", i, r->cfg.name,
                (int)(t / 10), (int)((t % 10 + 10) % 10), r->cfg.trv_topic);
     }
-    /* What a setpoint would carry right now — the panel's own online state. */
-    printf("panel is %s\n", heating_online() ? "online" : "offline (nothing is published)");
+    /* What the panel thinks of its own link — the first thing to check when a
+     * card sits empty or greyed. */
+    printf("panel: Wi-Fi %s, broker session %s, %d/%d rooms reporting (%ds staleness)\n",
+           app_mqtt_wifi_missing() ? "not configured" : "configured",
+           app_mqtt_session_up() ? "up" : "down",
+           heating_rooms_reporting(), HEATING_ROOMS, HEATING_STALE_S);
 }
 
 static int heating_console_cmd(int argc, char **argv)

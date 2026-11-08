@@ -54,6 +54,18 @@ static void (*s_data_handler)(const char *topic, int topic_len,
 /* The product says its session is up: re-subscribe its topics here so they
  * are in place on every (re)connect, before any state message is missed. */
 static bool s_held_online = false;
+/* Whether the session ever came up; drives how long an unreachable broker is
+ * retried (see the MQTT_EVENT_DISCONNECTED case). */
+static bool s_ever_connected = false;
+static bool s_offline_reported = false;
+
+/* Retry policy for a broker that never answers, and when the current client
+ * was started (to measure how long it has been trying). */
+#define OFFLINE_GIVE_UP_S 300
+#define OFFLINE_RETRY_S   30
+static bool     s_offline_retry_forever = true;
+static uint32_t s_offline_retry_delay_s = OFFLINE_GIVE_UP_S;
+static int64_t  s_client_started_ms = 0;
 
 
 
@@ -171,16 +183,33 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t event_i
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
             s_connected = true;
+            s_ever_connected = true;
+            s_offline_reported = false;
             ESP_LOGI(TAG, "MQTT connected");
             esp_mqtt_client_publish(s_client, s_status_topic, "online", 0, 1, true);
 
             mqtt_on_event(1);
             break;
-        case MQTT_EVENT_DISCONNECTED:
+        case MQTT_EVENT_DISCONNECTED: {
             s_connected = false;
-            ESP_LOGW(TAG, "MQTT disconnected — esp-mqtt reconnects on its own");
             mqtt_on_event(0);
+            /* A broker that was never there is not a fault of the panel: keep
+             * trying for a while, then stop and say so once. A session that
+             * WAS up (the broker restarted) always resumes retrying. */
+            int64_t up_s = (esp_timer_get_time() / 1000 - s_client_started_ms) / 1000;
+            if (!s_ever_connected && !s_offline_retry_forever && up_s > (int64_t)OFFLINE_GIVE_UP_S) {
+                if (!s_offline_reported) {
+                    s_offline_reported = true;
+                    ESP_LOGW(TAG, "broker unreachable for %ld s — retrying every %u s "
+                                  "(press BOOT long or run mqtt-broker to retry now)",
+                             (long)up_s, (unsigned)s_offline_retry_delay_s);
+                }
+                esp_mqtt_client_stop(s_client);
+            } else {
+                ESP_LOGW(TAG, "MQTT disconnected — esp-mqtt reconnects on its own");
+            }
             break;
+        }
         case MQTT_EVENT_DATA:
             mqtt_handle_data(event->topic, event->topic_len, event->data, event->data_len);
             break;
@@ -219,12 +248,15 @@ static void mqtt_start_client(void)
         return;
     }
     esp_mqtt_client_register_event(s_client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    s_client_started_ms = esp_timer_get_time() / 1000;
     esp_mqtt_client_start(s_client);
     ESP_LOGI(TAG, "MQTT connecting to %s%s", s_uri,
              mqtt_uri_is_tls(s_uri) ? " (TLS, certificate name check skipped)" : "");
 }
 
-/* The retry runs on the esp_timer task, never on the event task. */
+/* The framework's default event loop ("sys_evt") never runs our handlers: they
+ * are registered with a queue as their data and only copy the event into it,
+ * and mqtt_net does the work. */
 #define RETRY_BACKOFF_S 30
 /* A start requested from the event path waits this long, so the client comes
  * up once the association's event storm has passed. */
@@ -233,6 +265,17 @@ static esp_timer_handle_t s_retry_timer = NULL;
 
 static void net_start_cb(void *arg);
 static void mqtt_start_client(void);
+
+void app_mqtt_set_offline_policy(bool retry_forever, uint32_t delay_s)
+{
+    s_offline_retry_forever = retry_forever;
+    s_offline_retry_delay_s = delay_s ? delay_s : 1;
+}
+
+bool app_mqtt_session_up(void)
+{
+    return s_connected;
+}
 
 static void wifi_retry_cb(void *arg)
 {

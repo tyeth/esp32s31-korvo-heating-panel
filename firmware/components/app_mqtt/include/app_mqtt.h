@@ -101,6 +101,14 @@ void app_mqtt_set_data_handler(void (*handler)(const char *topic, int topic_len,
  *  (false), so it can hold the session or re-attempt the connection. */
 void app_mqtt_set_online(bool online);
 
+/** How long the transport keeps retrying a broker that never came up.
+ *  @p delay_s is how often the panel re-attempts on its own (0 = mqtt's own
+ *  back-off). A session that HAS come up once always retries indefinitely. */
+void app_mqtt_set_offline_policy(bool retry_forever, uint32_t delay_s);
+
+/** The broker session is up right now. */
+bool app_mqtt_session_up(void);
+
 /* ── SoftAP onboarding ───────────────────────────────────────────────────
  *
  * While no Wi-Fi credentials are stored the block serves its own access point

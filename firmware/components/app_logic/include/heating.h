@@ -86,6 +86,9 @@ bool heating_format_time(int64_t seen_ms, char *buf, size_t len);
  *  or 20.0 °C before the first one. */
 int16_t heating_room_target_ui(const heating_room_t *room);
 
+/** How many rooms have a reading younger than HEATING_STALE_S. */
+int heating_rooms_reporting(void);
+
 /** Restart the staleness clock for every reading (used on a transport change). */
 void heating_mark_all_stale(void);
 

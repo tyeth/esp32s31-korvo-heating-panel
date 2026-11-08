@@ -1,7 +1,9 @@
 #include "app_logic.h"
 #include "app_driver.h"
 #include "app_config.h"
+#include "app_mqtt.h"
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include "esp_board_manager.h"
 #include "dev_button.h"
 #include <iot_button.h>
@@ -156,11 +158,34 @@ static void sntp_start_task(void *arg)
 }
 #endif
 
+/* Every 60 s: the link state the panel shows, the clock, and the heap — the
+ * three facts a field report needs when a panel sits at "offline" or looks
+ * idle while the broker is actually up. */
+static void status_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(60000));
+        struct tm lt = {};
+        time_t t = time(NULL);
+        bool clock_ok = t > 1600000000;
+        if (clock_ok) localtime_r(&t, &lt);
+        ESP_LOGI(TAG, "status: broker %s, clock %s%02d:%02d, heap %u (min %u)",
+                 app_mqtt_configured() ? "configured" : "not configured",
+                 clock_ok ? "" : "unset ", lt.tm_hour, lt.tm_min,
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)esp_get_minimum_free_heap_size());
+    }
+}
+
 void diagnostics_sntp_start(void)
 {
 #if CONFIG_SOC_WIFI_SUPPORTED || CONFIG_SOC_WIRELESS_HOST_SUPPORTED || CONFIG_ETH_ENABLED
     if (xTaskCreate(sntp_start_task, "sntp_start", 3072, NULL, 3, NULL) != pdPASS) {
         ESP_LOGW(TAG, "clock: SNTP task not started — time() stays at the epoch");
+    }
+    if (xTaskCreate(status_task, "status_log", 3072, NULL, 2, NULL) != pdPASS) {
+        ESP_LOGW(TAG, "status: periodic status log not started");
     }
 #else
     ESP_LOGW(TAG, "clock: no IP stack on this chip — clock stays unset");

@@ -242,6 +242,17 @@ int16_t heating_room_target_ui(const heating_room_t *room)
     return room->read_target;
 }
 
+int heating_rooms_reporting(void)
+{
+    int n = 0;
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        int16_t tenth;
+        bool stale;
+        if (heating_room_current(&s_rooms[i], &tenth, &stale, NULL) && !stale) n++;
+    }
+    return n;
+}
+
 void heating_mark_all_stale(void)
 {
     heating_ui_invalidate();
@@ -322,6 +333,13 @@ static void apply_payload(heating_reading_t *reading, const char *data, int len,
 
 void heating_on_mqtt_message(const char *topic, int topic_len, const char *data, int data_len)
 {
+    /* A shortened copy for the log: what arrived, on which topic. */
+    char seen[96];
+    int copy = data_len < 48 ? data_len : 48;
+    int tcopy = topic_len < 44 ? topic_len : 44;
+    snprintf(seen, sizeof(seen), "%.*s => %.*s%s", tcopy, topic, copy, data,
+             data_len > copy ? "…" : "");
+
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < HEATING_ROOMS; i++) {
             heating_room_t *room = &s_rooms[i];
@@ -329,6 +347,7 @@ void heating_on_mqtt_message(const char *topic, int topic_len, const char *data,
             if (match == NULL || match[0] == 0) continue;
             if ((int)strlen(match) != topic_len || memcmp(match, topic, topic_len) != 0) continue;
 
+            ESP_LOGI(TAG, "%s: %s", room->cfg.name, seen);
             if (pass == 0) {
                 /* One zigbee2mqtt payload carries everything the card needs. */
                 apply_payload(&room->target, data, data_len, "current_heating_setpoint");
