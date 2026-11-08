@@ -1,0 +1,116 @@
+{
+  "agent": "functional_testing",
+  "seq": 73,
+  "savedAt": "2026-11-08T01:35:51.908Z",
+  "report": {
+    "result": "fail",
+    "summary": "The settings-page fix and new state line are in and the fresh-boot path is healthy, but the commissioned-reboot scenario still fails — now with a CPU 'Cache error' at a different unmapped address (PC 0x2FAFAAD4) inside the Wi-Fi driver's transmit path (ppTask → ppProcessTxQ → ppGetTxframe) instead of ieee80211_send_probereq.",
+    "report": {
+      "deviceInfo": {
+        "appVersion": "zerocode_ai_firmware 1.0.0, ESP-IDF e9da155a, ELF SHA256 93f1328ee",
+        "bootTime": "fresh boot reaches the console ~2.1 s after reset; the configured boot aborts ~1.7 s after reset",
+        "chip": "ESP32-S31 rev v0.0, 2 cores, 16 MB flash, 16 MB PSRAM",
+        "connectivity": "AP-only onboarding on a fresh panel (wifi:mode : softAP); commissioning switches the radio to station (wifi:mode : sta); no broker peer in the emulator, every dial fails 'Host is unreachable'",
+        "crash": "configured reboot: CPU 'Cache error' (mcause 0x19) at PC=0x2FAFAAD4 (a RAM address), this time inside ppTask -> ppProcessTxQ -> ppSearchTxframe -> ppGetTxframe; different PC from the previous five builds but the same class and timing",
+        "freeHeap": "not re-read on the crashed boot"
+      },
+      "hardwareVerificationDeferred": true,
+      "notes": [
+        "This round the configured-reboot fault moved: same kind of crash (CPU 'Cache error', mcause 0x19, at ~166.6 M cycles, i.e. the same point in the boot), but now PC=0x2FAFAAD4 (RAM/PSRAM, unmapped for execution) reached from the Wi-Fi low-level transmit path (ppTask -> ppProcessTxQ -> ppSearchTxframe -> ppGetTxframe) instead of the previous ieee80211_getmgtframe/ieee80211_send_probereq frame. A moving call site with an identical fault class is consistent with the frames/memory being corrupted by something earlier rather than with a single bad instruction — the emulated Wi-Fi stack is a stronger suspect now, but so is any memory overwrite in the boot path.",
+        "The product-side change this round (static 3 KB settings POST body, per-message logging, console/status lines) is confirmed present and working: `heating` now prints 'panel: Wi-Fi not configured, broker session down, 0/4 rooms reporting (600s staleness)', which is the new state line.",
+        "The review's finding that the new offline give-up policy has no caller is correct and accepted: nothing in the shipped image can enable it, so the panel keeps dialling an unreachable broker (which is what the spec's 'reconnect attempts back off to every 30 s' asks for anyway).",
+        "The modes/fresh path are unchanged and healthy: display once, dashboard up (4 rooms), AP-only onboarding, console up, warning-free build.",
+        "Non-fatal lines, not counted on their own: sdmmc_init_ocr 0x107 (no SD card), sccb_i2c transmit error then a correct ov3660 detection, 'i2s_common: GPIO 4/5 is not usable', 'gpio: conflict found for GPIO[7]', phy RF-calibration fallback, 'Wi-Fi join refused: ESP_ERR_WIFI_CONN' during commissioning, and the usual Wi-Fi rate/power dump."
+      ],
+      "suggestedFix": "The configured-boot crash keeps changing call site with an identical signature (Cache error at an unmapped address ~1.7 s after reset): first ieee80211_getmgtframe/ieee80211_send_probereq, now ppTask -> ppProcessTxQ -> ppSearchTxframe -> ppGetTxframe. A moving site argues for one corruption source rather than one bad instruction, and the cheapest next step is to make the source visible instead of guessing: enable the heap poisoning / stack-canary and the FreeRTOS stack high-water instrumentation (CONFIG_HEAP_POISONING_COMPREHENSIVE, CONFIG_FREERTOS_USE_TRACE_FACILITY) and log the Wi-Fi task high-water marks before and after the connection attempt; also try the same image with the radio brought up but the join suppressed (temporarily skip the connect on a configured boot) to see whether the fault follows association or the driver init. This is one change to make, not more churn: no product code is on either fault frame.",
+      "tests": [
+        {
+          "category": "display",
+          "details": "Both boots registered the panel once: the duplicate init is refused with a warning, the RGB panel and GT1151 touch are registered, 'Display initialized' follows; no LVGL teardown, no assert.",
+          "evidence": "W app_display: app_display_init() called twice — ignored (use app_display_ready()) / I app_display: Panel 'display_lcd' from board 'esp32_s31_korvo_1': generic_rgb rgb 800x480 / I app_display: Display initialized",
+          "name": "Display single bring-up / no assert",
+          "result": "pass"
+        },
+        {
+          "category": "boot",
+          "details": "Fresh (factory) panel: full sequence to 'Console ready' and 'ZeroCode AI firmware started'; dashboard up (4 rooms), settings page and web UI up, MQTT init with the AP-only onboarding access point; stays up and answers commands.",
+          "evidence": "I (1144) heating_ui: dashboard up (4 rooms) / I (1224) wifi:mode : softAP (24:0a:c4:00:00:02) / I (1224) app_mqtt: SoftAP 'Korvo-Heating-0002' … / I (2084) app_main: ZeroCode AI firmware started",
+          "name": "Fresh-panel boot to dashboard, web UI, MQTT init and console",
+          "result": "pass"
+        },
+        {
+          "category": "console",
+          "details": "help, uptime, heating, mqtt-wifi, mqtt-broker answer. 'heating' lists the four spec rooms with the four zigbee2mqtt TRV state topics and the 5..30 °C range, and now also prints the link/session/reporting state line. An offline setpoint is refused, not queued.",
+          "evidence": "0 Bathroom target 20.0 zigbee2mqtt/0xa4c1383b5b3d7063 … 3 Living room target 20.0 zigbee2mqtt/0xa4c13829aa5a7009 / panel: Wi-Fi not configured, broker session down, 0/4 rooms reporting (600s staleness) / panel is offline (nothing is published)",
+          "name": "Console surface, room table, new state line and offline refusal (f8, f4, f16, f12)",
+          "result": "pass"
+        },
+        {
+          "category": "commissioning",
+          "details": "mqtt-wifi saves and moves the radio AP-only → station in one step; the duplicate join is reported ('Wi-Fi join refused: ESP_ERR_WIFI_CONN') and the panel continues; mqtt-broker saves, dials and logs 'MQTT connecting to mqtt://192.168.4.2:1883'. Both values are used on the next boot.",
+          "evidence": "I wifi:mode : sta (24:0a:c4:00:00:01) / wifi config saved — connecting / W app_mqtt: Wi-Fi join refused: ESP_ERR_WIFI_CONN / broker config saved / I app_mqtt: MQTT connecting to mqtt://192.168.4.2:1883",
+          "name": "Commissioning: AP → station, saved settings, session attempt (f5)",
+          "result": "pass"
+        },
+        {
+          "category": "stability",
+          "details": "The boot after the console 'reboot' of the commissioned panel aborts again with 'Cache error' (mcause 0x19) ~1.7 s after reset, at an unmapped address — but the failing frame is different this time (ppTask -> ppProcessTxQ -> ppSearchTxframe -> ppGetTxframe at PC 0x2FAFAAD4, previously ieee80211_getmgtframe/ieee80211_send_probereq at 0xAFD6A25E). The emulator exits (code 1) before app_logic and the console, so a commissioned panel still does not come back from a power cycle.",
+          "evidence": "[WARN machine::rom_stubs] panic_info: reason='Cache error' … mepc=0x2FAFAAD4 ra=0x2F830696 mcause=0x19 / Firmware abort: Cache error / CPU fault at PC=0x2FAFAAD4 after 166620906 cycles / #9 0x2f830696 in ppGetTxframe () / #22 0x2f83079a in ppSearchTxframe () / #27 0x2f830e46 in ppProcessTxQ () / #30 0x2f8320f4 in ppTask () / [host] emulator stopped: esp-emu exited on its own (exit code 1)",
+          "name": "Boot after a reboot of a commissioned panel — no crash / reset (previously failing; 6th round)",
+          "result": "fail"
+        },
+        {
+          "category": "hardware",
+          "details": "The consumer-reported crash 'visiting the settings page reboots the device' was fixed by moving the 3 KB POST body off the httpd task's stack (static buffer). On this device the page cannot be reached (no network peer for the panel's SoftAP from the emulator, no browser in the lab), so the fix is verified only by construction — the reviewer confirmed the 3 KB frame is gone from httpd.",
+          "evidence": "review 072: 'the 3 KB POST body is now a static buffer (heating_web.cpp:359), removing a 3 KB stack allocation from the 4 KB httpd task'",
+          "name": "Settings page does not reboot the panel (consumer report)",
+          "result": "unverified"
+        },
+        {
+          "category": "connectivity",
+          "details": "No broker peer exists on the emulator (dial fails 'Host is unreachable'); publish, subscribe, the new per-message logging and the state-poll paths cannot be observed with real payloads.",
+          "evidence": "E esp-tls: [sock=57] connect() error: Host is unreachable / W app_mqtt: MQTT disconnected — esp-mqtt reconnects on its own",
+          "name": "MQTT setpoint publish, TRV state ingest/logging, permit-join (f4, f16, f10, f15)",
+          "result": "unverified"
+        },
+        {
+          "category": "connectivity",
+          "details": "Needs broker payloads and the screen; no peer exists here.",
+          "name": "Air-sensor override, heating/off derivation, staleness greying (f7, f18, f2)",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "'dashboard up (4 rooms)' is logged, but painting and tap handling can only be seen on the real panel.",
+          "name": "Dashboard rendering, touch selection, +/- 0.5 °C, banners, dimming (f2, f3, f19, f13)",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "Strip is bound and driven by app_logic; colour remains a physical observation.",
+          "name": "Status LED colours (f6, f12)",
+          "result": "unverified"
+        },
+        {
+          "category": "voice",
+          "details": "Needs a microphone or button press. Vocabulary is 17 of 17 phrases — three variants per room plus kitchen, bedroom, 'warm up', 'cool down', cancel; the spec's own example 'set the office to 21' still has no phrase.",
+          "evidence": "I (984) heating_voice: 17 of 17 English phrases registered / Command 1600-1616 with no whole-number-21 variant",
+          "name": "Wake word / push-to-talk / spoken setpoints (f1, f11, f9)",
+          "result": "unverified"
+        },
+        {
+          "category": "commissioning",
+          "details": "The AP comes up (AP-only mode) with its settings URL; joining it from a real client is a user/hardware step.",
+          "name": "Onboarding through the SoftAP from a phone (f5)",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "Not exercised this round; a 10 s physical hold cannot be done here.",
+          "name": "Factory reset (10 s button hold)",
+          "result": "unverified"
+        }
+      ]
+    }
+  }
+}
