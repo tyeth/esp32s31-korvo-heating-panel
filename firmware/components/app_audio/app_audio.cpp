@@ -198,7 +198,10 @@ size_t zc_audio_mic_read(int16_t *dest, size_t samples)
             for (int k = 0; k < 33; k++) {
                 acc += (int32_t)k_lp[k] * x[k];
             }
-            acc >>= 15;
+            /* x3 digital boost (~9.5 dB) on top of the PGA's 36.5 dB ceiling:
+             * room speech still peaked under 1000 of 32767 at the analog
+             * maximum, below what WakeNet triggers on. Saturating shift. */
+            acc = (acc >> 15) * 3;
             if (acc > 32767) acc = 32767;
             if (acc < -32768) acc = -32768;
             dest[done + o] = (int16_t)acc;
@@ -442,10 +445,11 @@ esp_err_t app_audio_init(void)
                      MIC_NATIVE_RATE);
             return ESP_FAIL;
         }
-        /* 30 dB: the record example's recording gain; without it the ADC sits
-         * at 0 dB and a command from across the room reaches the recogniser
-         * as a whisper. The AFE's AGC rides on top. */
-        if (esp_codec_dev_set_in_gain(codec->codec_dev, 30.0f) != ESP_CODEC_DEV_OK) {
+        /* The ES8389 PGA's top step (36.5 dB): without any gain the ADC sits
+         * at 0 dB, and even at 30 dB live room speech peaked near 900 of
+         * 32767 — too faint for the wake word. The digital boost in
+         * zc_audio_mic_read adds the rest; the AFE's AGC rides on top. */
+        if (esp_codec_dev_set_in_gain(codec->codec_dev, 36.0f) != ESP_CODEC_DEV_OK) {
             ESP_LOGW(TAG, "mic in-gain not set — recognition range will suffer");
         }
         s_mic_dev = codec->codec_dev;
