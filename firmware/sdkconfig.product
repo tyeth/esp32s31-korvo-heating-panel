@@ -21,3 +21,8 @@ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=8192
 # rather than switched off: mdns has no on/off switch, and calling its init
 # would still create the task.
 CONFIG_MDNS_TASK_STACK_SIZE=8192
+
+# The flash-write fix lives in sdkconfig.defaults (CONFIG_ESP_INT_WDT_TIMEOUT_MS).
+# The task watchdog this file does NOT touch: with the interrupt watchdog at
+# 1500 ms, the task watchdog's 10 s still prints first, so the log names the
+# task that blocked instead of only the CPU that was reset.

@@ -21,6 +21,15 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 CONFIG_NEWLIB_NANO_FORMAT=y
 
+# The RV32IMC core PAUSES all three timers during a flash write (the cache is
+# halted, so its instructions are not fetched); with the stock 300 ms the INT_WDT
+# trips, prints the 1.5 s-configured INT_WDT timeout warning and resets both CPUs
+# ("PRO CPU has been reset by WDT"). The abort lands in the ROM — the MSPI
+# "set to best phase" lines at the top of the log are the ROM's own PSRAM timing
+# tune on the way back up, which is the boot noise worth reading rather than
+# suppressing.
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=1500
+
 # Diagnostics are ON for this build: the panel is being brought up in the field,
 # and a silent device is the one thing that cannot be debugged. Every tag — ours,
 # esp-mqtt's, the TLS layer's, the Wi-Fi driver's — logs at VERBOSE, so the whole

@@ -200,8 +200,8 @@ static const struct { const char *name; const char *what; } k_tags[] = {
     { "app_mqtt",       "Wi-Fi, broker, MQTT session"         },
     { "app_console",    "the console REPL"                    },
     { "app_webui",      "the HTTP server"                     },
-    { "MSPI",           "SPI-mem driver — held at WARN"        },
-    { "ADC",            "ADC oneshot driver — held at WARN"    },
+    { "MSPI",           "SPI-mem & PSRAM timing (ROM/boot)"    },
+    { "ADC",            "ADC oneshot driver (board buttons)"   },
 };
 
 static void log_list(void)

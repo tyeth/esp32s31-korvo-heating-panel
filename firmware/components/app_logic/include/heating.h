@@ -126,8 +126,8 @@ esp_err_t heating_permit_join(void);
 /* ── log verbosity ─────────────────────────────────────────────────────
  *
  * One selection for the whole console, kept in NVS so it survives a reboot:
- * the default level for every tag the panel does not name, plus the noisy
- * driver/interrupt tags (MSPI, ADC, …) this product runs but never reads.
+ * the default level for every tag the panel does not name, plus the driver tags
+ * that would otherwise fill the console (MSPI, ADC).
  * It is the setting the settings page offers and the `log` command reads.
  * sdkconfig's VERBOSE default still applies until one is chosen here. */
 
