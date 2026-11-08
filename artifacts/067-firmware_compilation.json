@@ -1,0 +1,29 @@
+{
+  "agent": "firmware_compilation",
+  "seq": 67,
+  "savedAt": "2026-11-08T01:15:57.252Z",
+  "report": {
+    "result": "pass",
+    "summary": "Rebuild of updated firmware succeeded for esp32s31; app_mqtt.cpp warnings from last round are gone.",
+    "report": {
+      "binaryPath": "firmware/build/zerocode_ai_firmware.bin",
+      "board": "esp32-s31-korvo-1",
+      "buildId": "cb:zerocode-build-lambda:2943942f-3875-4301-a9cf-569bb4d83da8",
+      "exitCode": 0,
+      "firmwareSize": "0x2cd410 (2937872 B)",
+      "flashUsage": "app partition 0x380000 (3670016 B); 0xb2bf0 (732144 B) = 20% free; bootloader 0x5700 (22272 B), 9% free",
+      "mergedImage": "firmware/build/merged_flash.bin (0xa092c7 bytes, flash at 0x0)",
+      "notes": [
+        "Incremental rebuild: app_mqtt.cpp recompiled -> libapp_mqtt.a relinked (7 ninja steps, 10.1 s), ELF linked, image created, partition size check passed.",
+        "Binary size identical to the previous build (0x2cd410), so this round's change is behaviour-only or otherwise size-neutral; partition headroom still 20%.",
+        "eFuse virtualization verified in sdkconfig (CONFIG_EFUSE_VIRTUAL=y); sdkconfig.product checked for an override.",
+        "Ship artifacts produced: merged_flash.bin plus delta upload (14 files)."
+      ],
+      "previousBuildId": "cb:zerocode-build-lambda:4302fe2d-f870-44f1-b6d5-e84fadf01216",
+      "ramUsage": "not reported in build output (no static DRAM/IRAM summary line in log tail)",
+      "status": "success",
+      "target": "esp32s31",
+      "warnings": []
+    }
+  }
+}
