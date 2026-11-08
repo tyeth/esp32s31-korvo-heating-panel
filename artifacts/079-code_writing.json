@@ -1,0 +1,66 @@
+{
+  "agent": "code_writing",
+  "seq": 79,
+  "savedAt": "2026-11-08T02:16:08.676Z",
+  "report": {
+    "result": "pass",
+    "summary": "Quieter console (MSPI/ADC), MQTT username + persisted log level on /settings, and working `log` tag listing plus `help`; builds clean.",
+    "report": {
+      "templateApplied": "korvo-heating-panel (composed product, re-used — no re-apply this round)",
+      "filesCreated": [
+        "firmware/components/app_logic/log_level.cpp"
+      ],
+      "filesModified": [
+        "firmware/components/app_logic/include/heating.h",
+        "firmware/components/app_logic/CMakeLists.txt",
+        "firmware/main/app_main.cpp",
+        "firmware/components/app_logic/app_logic.cpp",
+        "firmware/components/app_logic/console.cpp",
+        "firmware/components/app_logic/heating_web.cpp",
+        "firmware/components/app_console/app_console.cpp",
+        "firmware/components/app_console/include/app_console.h"
+      ],
+      "components": [
+        {
+          "name": "app_logic",
+          "role": "product logic",
+          "notes": "New log_level.cpp owns the one persisted console verbosity (NVS ns zc_log, key level): default level for every tag, with MSPI and ADC held at WARN below it. Applied at boot from app_main BEFORE esp_board_manager_init(), so the board bring-up noise is gone from the first line. Console `log` now: no args = table of every product/framework/driver tag with its live level (esp_log_level_get) + the stored verbosity; `log <tag>` reads one; `log <tag> LEVEL` is a this-boot override; `log * LEVEL` stores the panel-wide choice (what /settings shows). Product registers its own `help` (app_console_print_commands) because the REPL destroys the command registry. /settings: added broker username field (pre-filled from app_mqtt_user(), empty keeps stored) and a log-level <select> (ERROR/WARN/INFO/DEBUG/VERBOSE); apply_form now restarts the broker only when uri/user/password actually changed, and applies+stores the level via heating_log_level_set()."
+        },
+        {
+          "name": "app_console",
+          "role": "framework console (smallest hook added)",
+          "notes": "Added app_console_print_commands() (declared in app_console.h) — the command list for the product's `help`. It exists because every esp_console_new_repl_*() de-inits and re-creates the command registry, so commands registered before the REPL starts (the app_console built-ins included) no longer exist when a user types; the REPL therefore has no `help` at all. The list mirrors register_builtin_cmds() plus the product's commands and must be kept in step. No other framework behaviour changed."
+        }
+      ],
+      "managedComponents": [],
+      "pins": {},
+      "consoleCommands": [
+        "log (list tags / read one / set one / log * LEVEL stores the panel-wide verbosity)",
+        "help (command list — registered by the product over app_console_print_commands)",
+        "heating",
+        "mqtt-diag",
+        "uptime",
+        "chip",
+        "version",
+        "heap",
+        "mem",
+        "reboot",
+        "factory_reset"
+      ],
+      "build": {
+        "target": "esp32s31",
+        "status": "success",
+        "buildId": "cb:zerocode-build-lambda:2fbd0b0e-539b-47f0-86ee-904db337b523",
+        "appSize": "0x2e6280 of 0x380000 (17% free)"
+      },
+      "openQuestions": [
+        "Power-cycle suppression of MSPI/ADC noise before app_main is impossible: the app_console built-ins (reboot/mem/…) are wiped by esp_console_new_repl_*(), so esp_console_run('mem') would report 'Unrecognized command' — that pre-existing bug is untouched and worth its own fix."
+      ],
+      "notes": [
+        "The ADC tag covers the board's ADC-button group; it is held at WARN together with MSPI, so button clicks no longer print, while the button events themselves still log from the `control` tag.",
+        "The log level is applied only from NVS at boot; the build's VERBOSE default remains in sdkconfig.defaults as the fallback when nothing was ever chosen.",
+        "Broker restart on Save was tightened: app_mqtt_set_broker() now only runs when uri, username or password actually differ from the stored values, so saving other fields no longer drops the MQTT session."
+      ]
+    }
+  }
+}
