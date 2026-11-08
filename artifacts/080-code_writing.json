@@ -1,0 +1,52 @@
+{
+  "agent": "code_writing",
+  "seq": 80,
+  "savedAt": "2026-11-08T02:28:57.064Z",
+  "report": {
+    "result": "pass",
+    "summary": "Raised the interrupt watchdog timeout (300 ms -> 1500 ms) so the flash-write stall no longer resets the chip with rst:0x10; the repeated MSPI 'best phase' lines are the ROM's PSRAM timing tune before any app logging exists.",
+    "report": {
+      "build": {
+        "appSize": "0x2e6280 of 0x380000 (17% free)",
+        "buildId": "cb:zerocode-build-lambda:d0ee1c39-d139-4277-a401-f677b3d2bf4b",
+        "intWdt": "CONFIG_ESP_INT_WDT_TIMEOUT_MS=1500 confirmed in the generated sdkconfig",
+        "status": "success",
+        "target": "esp32s31"
+      },
+      "commit": "411a006d7b21937d85ba3eb5097bb45be879ae4e",
+      "components": [
+        {
+          "name": "app_logic",
+          "notes": "log tag table: MSPI described as 'SPI-mem & PSRAM timing (ROM/boot)' and ADC as 'ADC oneshot driver (board buttons)', matching what these tags actually emit now.",
+          "role": "product logic"
+        },
+        {
+          "name": "sdkconfig (defaults/product)",
+          "notes": "CONFIG_ESP_INT_WDT_TIMEOUT_MS=1500 in sdkconfig.defaults, with the reason (timers paused during flash write). Task watchdog stays at 10 s so it still prints before the interrupt one.",
+          "role": "build config"
+        }
+      ],
+      "consoleCommands": [],
+      "diagnosis": [
+        "The pasted log is not a logging problem: the captured UART is repeating 'D MSPI DQS: set to best phase: 0 / V MSPI Timing: config_idx: 13, good' and trails off mid-line ('config_i�'), then starts again with ESP-ROM / rst:0x10 (CHIP_LP_WDT_RESET).",
+        "The truncated tail followed by a reset means the CPU was stopped in the middle of a print — the ROM's MSPI/octal-PSRAM timing tune on the boot path, before the banner and before any app or bootloader log level exists, so no esp_log_level_set or CONFIG_LOG_* can silence it.",
+        "The reset is CHIP_LP_WDT_RESET with rst:0x10 and 'PRO/APP CPU has been reset by WDT' — the RV32IMC core pauses its timers during a flash write and the stock 300 ms interrupt watchdog aborted the write. Raised CONFIG_ESP_INT_WDT_TIMEOUT_MS to 1500 ms; nothing else in the tree changes the interrupt watchdog.",
+        "The MSPI/ADC tags the app owns were already held at WARN by heating_log_level_apply_boot() from the previous round; that part of the request is in place and unchanged."
+      ],
+      "filesModified": [
+        "firmware/sdkconfig.defaults",
+        "firmware/sdkconfig.product",
+        "firmware/components/app_logic/console.cpp",
+        "firmware/components/app_logic/include/heating.h"
+      ],
+      "notes": [
+        "If the reset turns out not to be the flash-write pause, the log now keeps going long enough to show which task the task watchdog (10 s, still first) names before the interrupt watchdog acts."
+      ],
+      "openQuestions": [
+        "Cannot reproduce flashing on hardware from here: the flash-write attribution is inferred from rst:0x10 CHIP_LP_WDT_RESET plus a print truncated inside a MSPI line. If a hardware run still resets, the next log will name the blocking task."
+      ],
+      "pins": {},
+      "templateApplied": "korvo-heating-panel (no re-apply)"
+    }
+  }
+}
