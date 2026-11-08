@@ -241,6 +241,14 @@ void heating_factory_reset(void);
  *  once per broker session and by the console `mqtt-diag`. */
 void heating_log_diag(void);
 
+/* ── status strip ────────────────────────────────────────────────────── */
+
+/** The status strip's day brightness, 0..254 (0 = strip off). Stored in NVS;
+ *  the dim level follows it at a quarter. Default HEATING_STRIP_BRI_DEFAULT. */
+#define HEATING_STRIP_BRI_DEFAULT 25
+uint8_t heating_strip_brightness(void);
+void    heating_strip_set_brightness(uint8_t bri);
+
 #ifdef __cplusplus
 }
 #endif

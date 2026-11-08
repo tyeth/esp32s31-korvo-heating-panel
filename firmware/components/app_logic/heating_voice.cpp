@@ -14,20 +14,21 @@
  * esp_mn_commands_clear() and esp_mn_commands_update(), and a recognised id
  * comes back to heating_voice_apply_command().
  *
- * What is spoken and what happens:
+ * MultiNet is a fixed-phrase recogniser (no free slots), so "any room, any
+ * value" is an enumerated grid, sized against ESP_MN_MAX_PHRASE_NUM (400):
  *
- *   "set the bathroom to 20"        bathroom  → 20.0 °C   (published now)
- *   "set the office to 21.5"        office    → 21.5 °C
- *   "hallway 22" / "living room 19" the same, without the "set the … to"
- *   "bathroom 21 and a half"        the same, said with a half
- *   "warm up" / "cool down"         the room selected on screen, ±1 °C
- *   "cancel"                        nothing is published
- *   "set the kitchen to 20"         "Kitchen has no smart TRV"
+ *   "set the <room> to <5..30>"                       every room, whole degrees
+ *   "<room> <15..25>"                                 the short form, home range
+ *   "set the <room> to <15..24> and a half"           halves, both forms
+ *   "<room> <15..24> and a half"
+ *   "set all rooms to <5..30>"                        the whole house at once
+ *   "set the <roomA> and the <roomB> to <17..23>"     two rooms, either order
+ *   "warm up [the <room>]" / "cool down [the <room>]" ±1 °C
+ *   "cancel" / "stop"                                 nothing is published
+ *   "set the kitchen|bedroom to 20"                   "… has no smart TRV"
  *
- * English only, US English model (mn7_en): the numbers more than one aside are
- * spoken above / after the room, never as a bare digit.
- *
- * The outcome lands on the screen: there are no spoken replies.
+ * English only, US English model (mn7_en). The outcome lands on the screen:
+ * there are no spoken replies.
  */
 
 #include "heating.h"
@@ -43,38 +44,45 @@
 
 static const char *TAG = "heating_voice";
 
-/* Phrase ids: three per room (one per spoken number, see k_variants), then the
- * two rooms with no valve, then the relative commands. An id carries both what
- * to do and which number was said — the words after the room are what the user
- * actually said, not a digit recovered from text. */
-#define VOICE_ID_SET_BASE      1600
-#define VOICE_ID_SET_VARIANTS  4
-#define VOICE_ID_NO_TRV_BASE   (VOICE_ID_SET_BASE + HEATING_ROOMS * VOICE_ID_SET_VARIANTS)
-#define VOICE_ID_NO_TRV_COUNT  2
-#define VOICE_ID_WARM_UP       (VOICE_ID_NO_TRV_BASE + VOICE_ID_NO_TRV_COUNT)
-#define VOICE_ID_COOL_DOWN     (VOICE_ID_WARM_UP + 1)
-#define VOICE_ID_CANCEL        (VOICE_ID_COOL_DOWN + 1)
+#define VOICE_ID_SET_BASE   1600
+#define VOICE_MAX_PHRASES   360
+#define VOICE_PHRASE_MAX    64
 
-#define VOICE_MAX_PHRASES      (HEATING_ROOMS * VOICE_ID_SET_VARIANTS + VOICE_ID_NO_TRV_COUNT + 3)
-#define VOICE_PHRASE_MAX       64
+/* The whole-degree ranges each phrase family enumerates. Together they stay
+ * under MultiNet's 400-phrase ceiling (352 with four rooms). */
+#define FULL_MIN   5     /* "set the <room> to N"            */
+#define FULL_MAX  30
+#define BARE_MIN  15     /* "<room> N"                       */
+#define BARE_MAX  25
+#define HALF_MIN  15     /* "… N and a half"                 */
+#define HALF_MAX  24
+#define PAIR_MIN  17     /* "set the A and the B to N"       */
+#define PAIR_MAX  23
 
 /* The rooms that exist in the house but carry no smart TRV — naming one gets
  * "Kitchen has no smart TRV" instead of silence (spec failureModes). */
-static const char *const k_unheated[VOICE_ID_NO_TRV_COUNT] = { "Kitchen", "Bedroom" };
+#define VOICE_NO_TRV_COUNT 2
+static const char *const k_unheated[VOICE_NO_TRV_COUNT] = { "Kitchen", "Bedroom" };
 
-/* The spoken numbers. Each phrase says the target it means, so the published
- * value is exactly what the user said — including the spec's own example,
- * "set the office to 21". */
-static const int16_t k_variant_tenth[VOICE_ID_SET_VARIANTS] = {
-    200,   /* "set the <room> to 20"        */
-    210,   /* "set the <room> to 21"        */
-    215,   /* "set the <room> to 21.5"      */
-    210,   /* "<room> 21 and a half"        */
-};
+typedef enum : uint8_t {
+    ACT_SET,          /* room_a -> tenth                         */
+    ACT_SET_HALF,     /* same, said "… and a half"               */
+    ACT_SET_BARE,     /* "<room> N"                              */
+    ACT_SET_BARE_HALF,
+    ACT_SET_ALL,      /* every room -> tenth                     */
+    ACT_SET_PAIR,     /* room_a and room_b -> tenth              */
+    ACT_WARM,         /* room_a (or the selected room when -1) +1 °C */
+    ACT_COOL,
+    ACT_CANCEL,       /* "cancel"                                */
+    ACT_STOP,         /* "stop" — same outcome, its own phrase   */
+    ACT_NO_TRV,       /* room_a indexes k_unheated               */
+} voice_act_t;
 
 typedef struct {
-    int16_t     id;
-    const char *room;      /* the room's display name, NULL for the relative commands */
+    voice_act_t act;
+    int8_t      room_a;
+    int8_t      room_b;
+    int16_t     tenth;
 } voice_phrase_t;
 
 static voice_phrase_t s_table[VOICE_MAX_PHRASES];
@@ -89,48 +97,99 @@ void heating_voice_set_selected_room(int idx)
     if (idx >= 0 && idx < HEATING_ROOMS) s_sel_room = idx;
 }
 
+static const char *room_name(int idx)
+{
+    heating_room_t *r = heating_room(idx);
+    return r ? r->cfg.name : "";
+}
+
 /* Phrase text for table entry @p i; @p buf must hold VOICE_PHRASE_MAX bytes. */
 static void phrase_text(int i, char *buf, size_t len)
 {
-    /* English, as a person says it: the room name in the middle, the number at
-     * the end. The MultiNet model takes them and prints the recognised phrase
-     * as English words in the boot log. */
-    static const char *const k_variants[VOICE_ID_SET_VARIANTS] = {
-        "set the %s to 20",
-        "set the %s to 21",
-        "set the %s to 21.5",
-        "%s 21 and a half",
-    };
-    int set_n = HEATING_ROOMS * VOICE_ID_SET_VARIANTS;
-    if (i < set_n) {
-        snprintf(buf, len, k_variants[i % VOICE_ID_SET_VARIANTS], s_table[i].room);
-    } else if (i < set_n + VOICE_ID_NO_TRV_COUNT) {
-        snprintf(buf, len, k_variants[0], s_table[i].room);
-    } else {
-        int rel = i - (set_n + VOICE_ID_NO_TRV_COUNT);
-        snprintf(buf, len, "%s", rel == 0 ? "warm up" : (rel == 1 ? "cool down" : "cancel"));
+    const voice_phrase_t *p = &s_table[i];
+    int deg = p->tenth / 10;
+    switch (p->act) {
+        case ACT_SET:
+            snprintf(buf, len, "set the %s to %d", room_name(p->room_a), deg);
+            break;
+        case ACT_SET_HALF:
+            snprintf(buf, len, "set the %s to %d and a half", room_name(p->room_a), deg);
+            break;
+        case ACT_SET_BARE:
+            snprintf(buf, len, "%s %d", room_name(p->room_a), deg);
+            break;
+        case ACT_SET_BARE_HALF:
+            snprintf(buf, len, "%s %d and a half", room_name(p->room_a), deg);
+            break;
+        case ACT_SET_ALL:
+            snprintf(buf, len, "set all rooms to %d", deg);
+            break;
+        case ACT_SET_PAIR:
+            snprintf(buf, len, "set the %s and the %s to %d",
+                     room_name(p->room_a), room_name(p->room_b), deg);
+            break;
+        case ACT_WARM:
+            if (p->room_a < 0) snprintf(buf, len, "warm up");
+            else               snprintf(buf, len, "warm up the %s", room_name(p->room_a));
+            break;
+        case ACT_COOL:
+            if (p->room_a < 0) snprintf(buf, len, "cool down");
+            else               snprintf(buf, len, "cool down the %s", room_name(p->room_a));
+            break;
+        case ACT_CANCEL:
+            snprintf(buf, len, "cancel");
+            break;
+        case ACT_STOP:
+            snprintf(buf, len, "stop");
+            break;
+        case ACT_NO_TRV:
+            snprintf(buf, len, "set the %s to 20", k_unheated[p->room_a]);
+            break;
+        default:
+            buf[0] = '\0';
+            break;
     }
+}
+
+static void table_push(voice_act_t act, int room_a, int room_b, int16_t tenth)
+{
+    if (s_table_n >= VOICE_MAX_PHRASES) return;
+    s_table[s_table_n].act    = act;
+    s_table[s_table_n].room_a = (int8_t)room_a;
+    s_table[s_table_n].room_b = (int8_t)room_b;
+    s_table[s_table_n].tenth  = tenth;
+    s_table_n++;
 }
 
 static void build_table(void)
 {
-    int n = 0;
+    s_table_n = 0;
     for (int r = 0; r < HEATING_ROOMS; r++) {
-        for (int v = 0; v < VOICE_ID_SET_VARIANTS; v++) {
-            s_table[n].id = (int16_t)(VOICE_ID_SET_BASE + r * VOICE_ID_SET_VARIANTS + v);
-            s_table[n].room = heating_room(r)->cfg.name;
-            n++;
+        for (int d = FULL_MIN; d <= FULL_MAX; d++) table_push(ACT_SET, r, -1, (int16_t)(d * 10));
+        for (int d = BARE_MIN; d <= BARE_MAX; d++) table_push(ACT_SET_BARE, r, -1, (int16_t)(d * 10));
+        for (int d = HALF_MIN; d <= HALF_MAX; d++) {
+            table_push(ACT_SET_HALF,      r, -1, (int16_t)(d * 10 + 5));
+            table_push(ACT_SET_BARE_HALF, r, -1, (int16_t)(d * 10 + 5));
         }
     }
-    for (int i = 0; i < VOICE_ID_NO_TRV_COUNT; i++) {
-        s_table[n].id = (int16_t)(VOICE_ID_NO_TRV_BASE + i);
-        s_table[n].room = k_unheated[i];
-        n++;
+    for (int d = FULL_MIN; d <= FULL_MAX; d++) table_push(ACT_SET_ALL, -1, -1, (int16_t)(d * 10));
+    for (int a = 0; a < HEATING_ROOMS; a++) {
+        for (int b = 0; b < HEATING_ROOMS; b++) {
+            if (a == b) continue;
+            for (int d = PAIR_MIN; d <= PAIR_MAX; d++) {
+                table_push(ACT_SET_PAIR, a, b, (int16_t)(d * 10));
+            }
+        }
     }
-    s_table[n++] = { VOICE_ID_WARM_UP,   NULL };
-    s_table[n++] = { VOICE_ID_COOL_DOWN, NULL };
-    s_table[n++] = { VOICE_ID_CANCEL,    NULL };
-    s_table_n = n;
+    table_push(ACT_WARM, -1, -1, 0);
+    table_push(ACT_COOL, -1, -1, 0);
+    for (int r = 0; r < HEATING_ROOMS; r++) {
+        table_push(ACT_WARM, r, -1, 0);
+        table_push(ACT_COOL, r, -1, 0);
+    }
+    table_push(ACT_CANCEL, -1, -1, 0);
+    table_push(ACT_STOP,   -1, -1, 0);
+    for (int i = 0; i < VOICE_NO_TRV_COUNT; i++) table_push(ACT_NO_TRV, i, -1, 0);
 }
 
 /**
@@ -147,7 +206,7 @@ esp_err_t heating_voice_register(void)
     char phrase[VOICE_PHRASE_MAX];
     for (int i = 0; i < s_table_n; i++) {
         phrase_text(i, phrase, sizeof(phrase));
-        if (esp_mn_commands_add(s_table[i].id, phrase) == ESP_OK) {
+        if (esp_mn_commands_add(VOICE_ID_SET_BASE + i, phrase) == ESP_OK) {
             added++;
         } else {
             ESP_LOGW(TAG, "phrase '%s' rejected by MultiNet", phrase);
@@ -160,34 +219,47 @@ esp_err_t heating_voice_register(void)
 
 /* ── applying an outcome ─────────────────────────────────────────────── */
 
-static void apply(int idx, int16_t tenth)
+static heating_req_result_t request_one(int idx, int16_t tenth)
 {
-    heating_room_t *room = heating_room(idx);
-    if (room == NULL) return;
-    heating_ui_select(idx);
+    return heating_request_target(idx, tenth);
+}
 
-    switch (heating_request_target(idx, tenth)) {
-        case HEATING_REQ_OK: {
-            char msg[64];
-            /* Report the value that went on the wire — the card itself only
-             * moves when the TRV reports back. */
-            int16_t t = heating_clamp_tenth(tenth);
-            snprintf(msg, sizeof(msg), "%s \xE2\x86\x92 %d.%d\xC2\xB0" "C",
-                     room->cfg.name, (int)(t / 10), (int)((t % 10 + 10) % 10));
-            heating_ui_banner(msg);
-            heating_ui_poke();
+static void banner_set(const char *what, int16_t tenth)
+{
+    char msg[64];
+    /* ASCII only: the LCD's built-in fonts carry no arrows or em dashes.
+     * Report the value that went on the wire — the card itself only moves
+     * when the TRV reports back. */
+    int16_t t = heating_clamp_tenth(tenth);
+    snprintf(msg, sizeof(msg), "%s -> %d.%d\xC2\xB0" "C", what, (int)(t / 10), (int)((t % 10 + 10) % 10));
+    heating_ui_banner(msg);
+    heating_ui_poke();
+}
+
+static void report_result(heating_req_result_t res, const char *what, int16_t tenth)
+{
+    switch (res) {
+        case HEATING_REQ_OK:
+            banner_set(what, tenth);
             break;
-        }
         case HEATING_REQ_ALREADY_SET:
             heating_ui_banner("Already set");
             break;
         case HEATING_REQ_OFFLINE:
-            heating_ui_banner("Offline \xE2\x80\x94 controls disabled");
+            heating_ui_banner("Offline - controls disabled");
             heating_ui_rejected();
             break;
         default:
             break;
     }
+}
+
+static void apply(int idx, int16_t tenth)
+{
+    heating_room_t *room = heating_room(idx);
+    if (room == NULL) return;
+    heating_ui_select(idx);
+    report_result(request_one(idx, tenth), room->cfg.name, tenth);
 }
 
 /* Called by the audio framework for one recognised phrase id. */
@@ -196,50 +268,82 @@ void heating_voice_apply_command(int phrase_id)
     if (!s_registered) return;                 /* a different audio build */
     heating_ui_listening(false);               /* the window closes on a match */
 
-    if (phrase_id == VOICE_ID_CANCEL) {
-        heating_ui_banner("Cancelled");
-        return;
+    int i = phrase_id - VOICE_ID_SET_BASE;
+    if (i < 0 || i >= s_table_n) return;
+    const voice_phrase_t *p = &s_table[i];
+
+    switch (p->act) {
+        case ACT_SET:
+        case ACT_SET_HALF:
+        case ACT_SET_BARE:
+        case ACT_SET_BARE_HALF:
+            apply(p->room_a, p->tenth);
+            break;
+        case ACT_SET_ALL: {
+            heating_req_result_t worst = HEATING_REQ_ALREADY_SET;
+            for (int r = 0; r < HEATING_ROOMS; r++) {
+                heating_req_result_t res = request_one(r, p->tenth);
+                if (res == HEATING_REQ_OK) worst = HEATING_REQ_OK;
+                else if (res == HEATING_REQ_OFFLINE && worst != HEATING_REQ_OK) worst = res;
+            }
+            report_result(worst, "All rooms", p->tenth);
+            break;
+        }
+        case ACT_SET_PAIR: {
+            heating_req_result_t ra = request_one(p->room_a, p->tenth);
+            heating_req_result_t rb = request_one(p->room_b, p->tenth);
+            heating_req_result_t res =
+                (ra == HEATING_REQ_OK || rb == HEATING_REQ_OK) ? HEATING_REQ_OK :
+                (ra == HEATING_REQ_OFFLINE ? ra : rb);
+            char what[48];
+            snprintf(what, sizeof(what), "%s & %s", room_name(p->room_a), room_name(p->room_b));
+            heating_ui_select(p->room_a);
+            report_result(res, what, p->tenth);
+            break;
+        }
+        case ACT_WARM:
+        case ACT_COOL: {
+            int idx = (p->room_a >= 0) ? p->room_a : s_sel_room;
+            heating_room_t *room = heating_room(idx);
+            if (room == NULL) return;
+            int16_t step = (p->act == ACT_WARM) ? 10 : -10;
+            apply(idx, (int16_t)(heating_room_target_ui(room) + step));
+            break;
+        }
+        case ACT_CANCEL:
+        case ACT_STOP:
+            heating_ui_banner("Cancelled");
+            break;
+        case ACT_NO_TRV: {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "%s has no smart TRV", k_unheated[p->room_a]);
+            heating_ui_banner(msg);
+            break;
+        }
+        default:
+            break;
     }
-    if (phrase_id == VOICE_ID_WARM_UP || phrase_id == VOICE_ID_COOL_DOWN) {
-        heating_room_t *room = heating_room(s_sel_room);
-        if (room == NULL) return;
-        int16_t step = (phrase_id == VOICE_ID_WARM_UP) ? 10 : -10;
-        apply(s_sel_room, (int16_t)(heating_room_target_ui(room) + step));
-        return;
-    }
-    if (phrase_id >= VOICE_ID_NO_TRV_BASE && phrase_id < VOICE_ID_NO_TRV_BASE + VOICE_ID_NO_TRV_COUNT) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "%s has no smart TRV", k_unheated[phrase_id - VOICE_ID_NO_TRV_BASE]);
-        heating_ui_banner(msg);
-        return;
-    }
-    int rel = phrase_id - VOICE_ID_SET_BASE;
-    if (rel < 0 || rel >= HEATING_ROOMS * VOICE_ID_SET_VARIANTS) return;
-    apply(rel / VOICE_ID_SET_VARIANTS, k_variant_tenth[rel % VOICE_ID_SET_VARIANTS]);
 }
 
 /* ── the audio framework's other hooks ───────────────────────────────── */
 
-/* The words this panel knows, logged as the window opens. If what was said is
- * not on this list, nothing will recognise it — that is what the log is for. */
+/* The grammar this panel knows, logged as the window opens. 352 phrases are
+ * too many to print one by one, so the log names the families instead. */
 void heating_voice_print_vocabulary(void)
 {
-    char phrase[VOICE_PHRASE_MAX];
-    static char line[1024];
-    size_t w = 0;
-    w += (size_t)snprintf(line + w, sizeof(line) - w, "voice vocabulary (%d phrases):", s_table_n);
-    for (int i = 0; i < s_table_n && w + VOICE_PHRASE_MAX + 4 < sizeof(line); i++) {
-        phrase_text(i, phrase, sizeof(phrase));
-        w += (size_t)snprintf(line + w, sizeof(line) - w, "%s%s", i ? " |" : "", phrase);
-    }
-    ESP_LOGI(TAG, "%s", line);
+    ESP_LOGI(TAG, "voice vocabulary: %d phrases — \"set the <room> to <%d..%d>\", "
+                  "\"<room> <%d..%d>\", \"... <%d..%d> and a half\", "
+                  "\"set all rooms to <N>\", \"set the <A> and the <B> to <%d..%d>\", "
+                  "\"warm up / cool down [the <room>]\", \"cancel\", \"stop\"",
+             s_table_n, FULL_MIN, FULL_MAX, BARE_MIN, BARE_MAX, HALF_MIN, HALF_MAX,
+             PAIR_MIN, PAIR_MAX);
 }
 
 void heating_voice_on_event(int listening)
 {
     heating_ui_listening(listening != 0);
     if (listening) {
-        heating_ui_banner("Listening\xE2\x80\xA6");
+        heating_ui_banner("Listening...");
     }
 }
 

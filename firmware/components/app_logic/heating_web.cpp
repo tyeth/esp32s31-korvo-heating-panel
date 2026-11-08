@@ -41,7 +41,7 @@
 static const char *TAG = "heating_web";
 
 /* The form: one entry per field, the key exactly as the page names it. */
-#define FORM_FIELDS         (7 + HEATING_ROOMS * 3)
+#define FORM_FIELDS         (8 + HEATING_ROOMS * 3)
 #define FORM_VALUE_MAX      (HEATING_TOPIC_MAX + 8)
 
 typedef struct {
@@ -54,7 +54,7 @@ static bool s_submit = false;
 static bool s_permit = false;
 
 static const char *const k_field_keys[FORM_FIELDS] = {
-    "ssid", "pass", "broker", "user", "apass", "ca", "loglevel",
+    "ssid", "pass", "broker", "user", "apass", "ca", "loglevel", "ledbri",
     "r0name", "r0trv", "r0sensor",
     "r1name", "r1trv", "r1sensor",
     "r2name", "r2trv", "r2sensor",
@@ -249,6 +249,36 @@ static void render_page(bool was_saved)
         field(key, "Room air-sensor state topic", r->cfg.sensor_topic, "zigbee2mqtt/0x…");
     }
 
+    app_webui_send_chunk("<h2>Status light</h2>");
+    app_webui_send_chunk("<label>LED strip brightness<br><select name=\"ledbri\" style=\"width:100%"
+                         ";padding:9px;margin-top:4px;background:#1e1e1e;color:#eee;border:1px solid "
+                         "#333;border-radius:6px\">");
+    {
+        /* Stops on the WS2812's 0..254 scale. The strip doubles as the link /
+         * listening indicator, so even "low" stays visible up close. */
+        static const struct { const char *label; uint8_t bri; } k_bri[] = {
+            { "Off",    0 },
+            { "Faint",  8 },
+            { "Low",   25 },
+            { "Medium",60 },
+            { "High", 120 },
+        };
+        uint8_t cur = heating_strip_brightness();
+        for (size_t i = 0; i < sizeof(k_bri) / sizeof(k_bri[0]); i++) {
+            snprintf(line, sizeof(line), "<option value=\"%u\"%s>%s</option>", k_bri[i].bri,
+                     cur == k_bri[i].bri ? " selected" : "", k_bri[i].label);
+            app_webui_send_chunk(line);
+        }
+        if (cur != 0 && cur != 8 && cur != 25 && cur != 60 && cur != 120) {
+            snprintf(line, sizeof(line), "<option value=\"%u\" selected>Custom (%u)</option>", cur, cur);
+            app_webui_send_chunk(line);
+        }
+    }
+    app_webui_send_chunk("</select></label>");
+    app_webui_send_chunk("<p style='font-size:12px;color:#888'>The strip shows the link state "
+                         "(green online, amber listening). Saved in flash, applied at once; "
+                         "Off keeps it dark.</p>");
+
     app_webui_send_chunk("<h2>Console</h2>");
     app_webui_send_chunk("<label>Log level<br><select name=\"loglevel\" style=\"width:100%;padding:9px"
                          ";margin-top:4px;background:#1e1e1e;color:#eee;border:1px solid #333"
@@ -369,6 +399,13 @@ static void apply_form(void)
 
     if (form_get("loglevel")[0] && heating_log_level_set(form_get("loglevel")) != ESP_OK) {
         ESP_LOGW(TAG, "log level not saved: %s", form_get("loglevel"));
+    }
+
+    if (form_get("ledbri")[0]) {
+        int bri = atoi(form_get("ledbri"));
+        if (bri >= 0 && bri <= 254) {
+            heating_strip_set_brightness((uint8_t)bri);
+        }
     }
 
     if (form_get("ssid")[0]) {

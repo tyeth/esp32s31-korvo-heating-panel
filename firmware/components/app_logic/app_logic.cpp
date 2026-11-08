@@ -26,11 +26,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <nvs.h>
+
 #include <esp_log.h>
 #include <esp_console.h>
 #include <esp_err.h>
 
 static void set_strip(uint8_t hue, uint8_t sat, uint8_t bri);
+static void strip_off(void);
 static void strip_idle(void);
 
 /* ── one console command, for bench use with no network ──────────────── */
@@ -160,8 +163,42 @@ static const char *TAG = "heating_panel";
 #define HUE_AMBER    28
 #define HUE_RED      0
 #define SAT_MAX      254
-#define BRI_DAY      90     /* kept low: it sits on a wall, or a nightstand */
-#define BRI_DIM      16
+
+/* Strip brightness is the household's, not the firmware's: the WS2812 sits on
+ * a wall or a nightstand and even the old 90/254 lit a dark room. Stored in
+ * NVS ("heating"/"sbri"), set from the settings page, default LOW
+ * (HEATING_STRIP_BRI_DEFAULT, heating.h); 0 keeps the strip dark. The dim
+ * (idle/connecting) level follows at a quarter of the day level. */
+static uint8_t s_bri_day = HEATING_STRIP_BRI_DEFAULT;
+#define BRI_DAY      (s_bri_day)
+#define BRI_DIM      ((uint8_t)(s_bri_day >= 8 ? s_bri_day / 4 : (s_bri_day ? 2 : 0)))
+
+uint8_t heating_strip_brightness(void)
+{
+    return s_bri_day;
+}
+
+void heating_strip_set_brightness(uint8_t bri)
+{
+    s_bri_day = bri;
+    nvs_handle_t h;
+    if (nvs_open("heating", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "sbri", bri);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    strip_idle();                     /* apply to whatever state is showing */
+}
+
+static void strip_load_brightness(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("heating", NVS_READONLY, &h) == ESP_OK) {
+        uint8_t b = 0;
+        if (nvs_get_u8(h, "sbri", &b) == ESP_OK) s_bri_day = b;
+        nvs_close(h);
+    }
+}
 
 #define FR_HOLD_MS   10000  /* SET + MODE, the documented factory reset */
 #define LISTEN_MS    10000
@@ -190,6 +227,10 @@ static volatile int64_t s_last_event_ms = 0;
 
 static void set_strip(uint8_t hue, uint8_t sat, uint8_t bri)
 {
+    if (bri == 0) {                   /* brightness 0 = the strip stays dark */
+        strip_off();
+        return;
+    }
     app_driver_param_val_t v = {};
     v.u8 = hue; app_driver_set_param(APP_DRIVER_PARAM_HUE, v, APP_DRIVER_SOURCE_LOCAL);
     v.u8 = sat; app_driver_set_param(APP_DRIVER_PARAM_SATURATION, v, APP_DRIVER_SOURCE_LOCAL);
@@ -314,7 +355,7 @@ static void on_set_arm(void *arg, void *usr_data)
     (void)arg; (void)usr_data;
     if (!s_combo.set_down) return;
     /* Held, not tapped: the countdown starts here and only here. */
-    heating_ui_banner("Reset in 10 s — release to cancel");
+    heating_ui_banner("Reset in 10 s - release to cancel");
     if (s_fr_timer) {
         esp_timer_stop(s_fr_timer);
         esp_timer_start_once(s_fr_timer, (uint64_t)FR_HOLD_MS * 1000);
@@ -357,7 +398,7 @@ static void push_to_talk(void)
     }
     app_audio_listen_once();
     heating_ui_listening(true);
-    heating_ui_banner("Listening\xE2\x80\xA6");
+    heating_ui_banner("Listening...");
     if (s_listen_timer) esp_timer_start_once(s_listen_timer, (uint64_t)LISTEN_MS * 1000);
 }
 
@@ -402,7 +443,7 @@ void boot_btn_on_long_press(void)
             return;
         }
     }
-    heating_ui_banner("Offline — controls disabled");
+    heating_ui_banner("Offline - controls disabled");
     heating_ui_rejected();
 }
 
@@ -466,6 +507,7 @@ esp_err_t app_logic_init(void)
     const esp_timer_create_args_t fr_args = { .callback = &factory_reset_cb, .name = "heating_fr" };
     esp_timer_create(&fr_args, &s_fr_timer);
 
+    strip_load_brightness();
     bind_adc_buttons();
     heating_console_register();
     zc_con_print_help_init();

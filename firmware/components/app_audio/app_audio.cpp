@@ -283,9 +283,11 @@ esp_err_t app_audio_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    /* 6000 ms command window after the wake word. */
+    /* Command window after the wake word — matches the panel's 10 s listening
+     * bar (LISTEN_MS): at the old 6000 ms the recogniser gave up four seconds
+     * before the bar emptied, and a longer phrase spoken late was never heard. */
     s_mn = esp_mn_handle_from_name(mn_name);
-    s_mn_data = s_mn->create(mn_name, 6000);
+    s_mn_data = s_mn->create(mn_name, 10000);
     if (!s_mn_data) {
         ESP_LOGE(TAG, "MultiNet create failed");
         return ESP_ERR_NO_MEM;

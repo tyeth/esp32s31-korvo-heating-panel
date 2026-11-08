@@ -189,7 +189,7 @@ static void touch_hit(int x, int y)
                 heating_ui_banner("Already set");
                 break;
             case HEATING_REQ_OFFLINE:
-                heating_ui_banner("Offline \xE2\x80\x94 controls disabled");
+                heating_ui_banner("Offline - controls disabled");
                 heating_ui_rejected();
                 break;
             default:
@@ -327,16 +327,29 @@ static void build_screen(void)
         w->stamp = make_label(w->card, &lv_font_montserrat_12, lv_color_hex(0x888888));
         lv_obj_align(w->stamp, LV_ALIGN_BOTTOM_LEFT, 0, -28);
 
+        /* Target in the middle, − and + in the corners — matching touch_hit's
+         * thirds (left third −, right third +). The glyphs are LVGL's own
+         * symbol set: the built-in Montserrat fonts carry only ASCII plus the
+         * FontAwesome symbols, so U+2212 MINUS SIGN rendered as a tofu box. */
         w->target = make_label(w->card, &lv_font_montserrat_24, lv_color_hex(0x9AD0F5));
-        lv_obj_align(w->target, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+        lv_obj_align(w->target, LV_ALIGN_BOTTOM_MID, 0, 0);
 
         w->minus = make_label(w->card, &lv_font_montserrat_24, lv_color_hex(0x888888));
-        lv_label_set_text(w->minus, "\xE2\x88\x92");
+        lv_label_set_text(w->minus, LV_SYMBOL_MINUS);
         lv_obj_align(w->minus, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
         w->plus = make_label(w->card, &lv_font_montserrat_24, lv_color_hex(0x888888));
-        lv_label_set_text(w->plus, "+");
-        lv_obj_align(w->plus, LV_ALIGN_BOTTOM_RIGHT, -150, 0);
+        lv_label_set_text(w->plus, LV_SYMBOL_PLUS);
+        lv_obj_align(w->plus, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+
+        /* LVGL events do not bubble without LV_OBJ_FLAG_EVENT_BUBBLE, and the
+         * cards (plain lv_obj's) are clickable, so they swallowed every tap:
+         * the press/release handlers registered on the screen below never
+         * fired for a touch that landed on a card — which is to say, for
+         * every touch that was supposed to do anything. The same handlers go
+         * on each card; coordinates are absolute either way. */
+        lv_obj_add_event_cb(w->card, on_touch_press, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(w->card, on_touch_release, LV_EVENT_RELEASED, NULL);
     }
 
     s_footer = make_label(s_screen, &lv_font_montserrat_14, lv_color_hex(0xAAAAAA));
@@ -424,15 +437,16 @@ static void paint_footer(void)
         localtime_r(&t, &lt);
         snprintf(clock, sizeof(clock), "%02d:%02d", lt.tm_hour, lt.tm_min);
     }
+    /* ASCII only on the LCD: the built-in fonts have no em dash. */
     if (!heating_online()) {
-        snprintf(buf, sizeof(buf), "Offline \xE2\x80\x94 controls disabled      %s", clock);
+        snprintf(buf, sizeof(buf), "Offline - controls disabled      %s", clock);
     } else {
         int live = 0;
         for (int i = 0; i < HEATING_ROOMS; i++) {
             int16_t tenth; bool stale;
             if (heating_room_current(heating_room(i), &tenth, &stale, NULL) && !stale) live++;
         }
-        snprintf(buf, sizeof(buf), "Online \xE2\x80\x94 %d of %d rooms reporting      %s",
+        snprintf(buf, sizeof(buf), "Online - %d of %d rooms reporting      %s",
                  live, HEATING_ROOMS, clock);
     }
     lv_label_set_text(s_footer, buf);
