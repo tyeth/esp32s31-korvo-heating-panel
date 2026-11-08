@@ -1,0 +1,173 @@
+{
+  "agent": "code_review",
+  "seq": 72,
+  "savedAt": "2026-11-08T01:33:49.812Z",
+  "report": {
+    "result": "pass",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish current_heating_setpoint to zigbee2mqtt/<TRV> (qos1, retain 0); on connect subscribe every TRV/air-sensor topic and publish an empty message to each; time 254 to zigbee2mqtt/bridge/request/permit_join; retained status topic zerocode/mac/status with last-will. Every accepted room message is logged with room name and a truncated payload. HTTP /settings (GET/POST), /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init (mdns non-fatal)",
+          "app_mqtt_init (event queue + mqtt_net; STA when credentials exist, AP-only onboarding otherwise)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init (+ status_log task, 60 s)",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>; bare heating lists rooms plus Wi-Fi/broker-session/reporting status",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "expectedLogPatterns": [
+          "heating: <room>: zigbee2mqtt/0x... => {...} for every accepted state message",
+          "heating: room table loaded (...); subscribed to N room topic(s); requested fresh state of M",
+          "app_mqtt: MQTT connected; on failure MQTT disconnected - esp-mqtt reconnects on its own",
+          "app_mqtt: broker unreachable for N s - retrying every 300 s (only after the give-up policy is enabled)",
+          "diagnostics: status: broker configured/not configured, clock HH:MM, heap (min ...) every 60 s",
+          "app_console: Console ready; app_main: ZeroCode AI firmware started"
+        ],
+        "findings": [
+          {
+            "area": "correctness",
+            "description": "The new offline policy cannot be turned on by anything: app_mqtt_set_offline_policy() has no caller, so s_offline_retry_forever stays true and the give-up branch that stops the client and logs 'broker unreachable for N s' is dead. The writer's claim that the transport now gives up after 300 s is not reachable from the shipped firmware; the 'retrying every 30 s' wording in that message also does not match OFFLINE_RETRY_S and is never used by mqtt itself, which uses its own back-off.",
+            "evidence": "app_mqtt.cpp:269-273 app_mqtt_set_offline_policy() defined; static bool s_offline_retry_forever = true at :63; the only consumer is the DISCONNECTED branch :197-208; a search of firmware/components finds no call to app_mqtt_set_offline_policy outside app_mqtt.cpp and its header declaration (app_mqtt.h:107).",
+            "failureScenario": "An operator reads the writer's summary or the message text and expects the panel to stop dialling an unreachable broker after 300 s and print one clear line; in the shipped image the branch can never fire, the log keeps repeating MQTT disconnected - esp-mqtt reconnects on its own for ever, and nobody can enable the stop without a rebuild.",
+            "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+            "line": 269,
+            "severity": "info",
+            "suggestedChange": "Either enable the policy by default (s_offline_retry_forever = false) or wire a console command or settings toggle to app_mqtt_set_offline_policy(), and make the log text match what the code actually does."
+          },
+          {
+            "area": "spec_alignment",
+            "description": "Standing owner-level deviations: the factory reset is a 10 s hold of the single front button rather than SET+MODE, and the voice vocabulary has no phrase for the spec example set the office to 21.",
+            "evidence": "app_logic.cpp:375-376 COMBO_ARM_MS on handles[0]; heating_voice.cpp k_variant_tenth 200, 215, 210; functional report 069 records 17 of 17 phrases without a whole-number-21 variant.",
+            "failureScenario": "A user holding the front button for 10 s wipes the panel without a confirming combination, and saying the spec example sentence ends in Sorry, not understood.",
+            "file": "firmware/components/app_logic/app_logic.cpp",
+            "line": 375,
+            "severity": "info",
+            "suggestedChange": "Owner decision: restore SET+MODE and add whole-number 21 variants, or record both as accepted deviations."
+          }
+        ],
+        "filesReviewed": [
+          "artifacts/068-code_review.json",
+          "artifacts/069-functional_testing.json",
+          "artifacts/070-code_writing.json",
+          "artifacts/071-firmware_compilation.json",
+          "firmware/components/app_mqtt/app_mqtt.cpp",
+          "firmware/components/app_mqtt/include/app_mqtt.h",
+          "firmware/components/app_logic/heating.cpp",
+          "firmware/components/app_logic/heating_web.cpp",
+          "firmware/components/app_logic/diagnostics.cpp",
+          "firmware/components/app_logic/app_logic.cpp"
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button - click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD 800x480",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "The settings POST body is now a static buffer (heating_web.cpp:359), removing a 3 KB stack allocation from the 4 KB httpd task; the bounded loop and the form-too-long guard are intact.",
+          "heating_on_mqtt_message logs a 48-byte payload copy after matching a configured topic; printf precision bounds each write, and the 96-byte frame is fine on the mqtt task.",
+          "A 60 s status_log task (3 KB) now logs broker configured/not-configured, clock and heap.",
+          "The new offline policy function exists but has no caller, so the give-up behaviour is unreachable in the shipped image.",
+          "The commissioned-reboot crash is unchanged for the fifth build (same PC 0xAFD6A25E) and remains an emulator-side question."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (single setup task, lvgl_port_add_disp_rgb + add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim generic dot product",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (event queue + mqtt_net; AP-only onboarding, STA restart on commissioning; CA in NVS; per-message logging)",
+            "part": "Wi-Fi / MQTT"
+          },
+          {
+            "driver": "app_webui (httpd always, mdns non-fatal, static settings body)",
+            "part": "web UI / mDNS"
+          }
+        ],
+        "previousFindingsStatus": [
+          {
+            "evidence": "heating_web.cpp:359 static char s_body[3000] used by settings_entry; artifacts/070 records the user-reported httpd stack-protection fault as the cause.",
+            "finding": "consumer-reported crash: settings page rebooted the panel (httpd stack)",
+            "status": "fixed by construction (no 3 KB stack frame in the httpd task); not yet exercised through a browser"
+          },
+          {
+            "evidence": "app_mqtt.cpp:197-208 DISCONNECTED branch can stop the client and log once; policy function at :269.",
+            "finding": "log noise - MQTT disconnected every 30 s against an unreachable broker",
+            "status": "implemented but unreachable: nothing calls app_mqtt_set_offline_policy(), so the give-up path is dead code (recorded as info)"
+          },
+          {
+            "evidence": "heating.cpp heating_on_mqtt_message logs room + truncated payload; app_logic.cpp heating_console_usage prints Wi-Fi/session/reporting; diagnostics.cpp status_task logs every 60 s.",
+            "finding": "no visibility into broker/session state",
+            "status": "fixed and verified in source"
+          },
+          {
+            "evidence": "artifacts/069: fifth identical CPU cache error at PC 0xAFD6A25E on the commissioned reboot.",
+            "finding": "commissioned reboot aborts inside the Wi-Fi driver",
+            "status": "unchanged; emulator-side, deferred to hardware"
+          },
+          {
+            "evidence": "artifacts/069 confirms the build is warning-free and the mode-checked join logs its refusal.",
+            "finding": "previous info items (timer initialisers, join mode check)",
+            "status": "fixed and confirmed"
+          },
+          {
+            "evidence": "app_logic.cpp:375-376; heating_voice.cpp k_variant_tenth.",
+            "finding": "factory reset single-button hold and missing 21 voice phrase",
+            "status": "unchanged, owner decision"
+          }
+        ]
+      },
+      "summary": "The reported settings-page crash is fixed by construction (the 3 KB POST body moved off the httpd stack) and the new logging and console state are wired and bounded, but the newly added broker give-up policy has no caller so it can never fire; the fifth identical emulator Wi-Fi crash and the two owner-level spec deviations remain as documented."
+    }
+  }
+}
