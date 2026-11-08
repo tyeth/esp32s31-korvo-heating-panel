@@ -130,6 +130,38 @@ static bool json_get(const char *json, int len, const char *key, char *out, size
 
 /* ── model ───────────────────────────────────────────────────────────── */
 
+/* A room's zigbee2mqtt command topic — the topic that ACCEPTS a setpoint.
+ *
+ * The household's request was explicit: the state topics are right, but a
+ * setpoint must go to the per-attribute command topic rather than back into the
+ * state JSON. zigbee2mqtt exposes both forms:
+ *   <device>/set/current_heating_setpoint   {"current_heating_setpoint": "21"}
+ *   <device>/set                            {"current_heating_setpoint": "21"}
+ * The per-attribute form is used when the room's stored topic is a plain state
+ * topic; a topic that already names a /set/ (or /get) path is used as given, so
+ * a household that prefers the aggregate form can store it on the settings page
+ * without a rebuild. */
+static void command_topic_for(const char *stored, char *out, size_t len)
+{
+    if (stored == NULL || stored[0] == 0) {
+        out[0] = '\0';
+        return;
+    }
+    if (strstr(stored, "/set") != NULL || strstr(stored, "/get") != NULL) {
+        snprintf(out, len, "%s", stored);          /* already a command topic */
+        return;
+    }
+    snprintf(out, len, "%s/set/current_heating_setpoint", stored);
+}
+
+const char *heating_room_command_topic(int idx)
+{
+    static char s_cmd[HEATING_ROOMS][HEATING_TOPIC_MAX + 32];
+    if (idx < 0 || idx >= HEATING_ROOMS) return "";
+    command_topic_for(s_rooms[idx].cfg.trv_topic, s_cmd[idx], sizeof(s_cmd[idx]));
+    return s_cmd[idx];
+}
+
 heating_room_t *heating_room(int idx)
 {
     if (idx < 0 || idx >= HEATING_ROOMS) return NULL;
@@ -298,15 +330,19 @@ heating_req_result_t heating_request_target(int idx, int16_t tenth)
 
     char value[8];
     char payload[48];
+    char cmd_topic[HEATING_TOPIC_MAX + 32];
     format_tenth(tenth, value, sizeof(value));
     int n = snprintf(payload, sizeof(payload), "{\"current_heating_setpoint\": \"%s\"}", value);
-    if (app_mqtt_publish(room->cfg.trv_topic, payload, n, 1, false) < 0) {
+    /* The command topic, not the state topic: a setpoint written back into the
+     * state JSON is only an echo, zigbee2mqtt never acts on it. */
+    command_topic_for(room->cfg.trv_topic, cmd_topic, sizeof(cmd_topic));
+    if (app_mqtt_publish(cmd_topic, payload, n, 1, false) < 0) {
         return HEATING_REQ_OFFLINE;
     }
     room->last_pub_tenth = tenth;
     room->last_pub_ms = now;
     /* Nothing is claimed on screen: the card follows the TRV's own report. */
-    ESP_LOGI(TAG, "%s -> %s  %s", room->cfg.name, value, room->cfg.trv_topic);
+    ESP_LOGI(TAG, "%s -> %s  %s", room->cfg.name, value, cmd_topic);
     return HEATING_REQ_OK;
 }
 
@@ -333,21 +369,21 @@ static void apply_payload(heating_reading_t *reading, const char *data, int len,
 
 void heating_on_mqtt_message(const char *topic, int topic_len, const char *data, int data_len)
 {
-    /* A shortened copy for the log: what arrived, on which topic. */
-    char seen[96];
-    int copy = data_len < 48 ? data_len : 48;
-    int tcopy = topic_len < 44 ? topic_len : 44;
-    snprintf(seen, sizeof(seen), "%.*s => %.*s%s", tcopy, topic, copy, data,
-             data_len > copy ? "…" : "");
+    /* Every message that arrives is logged with its topic and payload —
+     * the first thing to look at when a card stays empty. */
+    ESP_LOGI(TAG, "IN %.*s => %.*s",
+             topic_len < 64 ? topic_len : 64, topic,
+             data_len < 160 ? data_len : 160, data ? data : "");
 
-    for (int pass = 0; pass < 2; pass++) {
+    bool claimed = false;
+    for (int pass = 0; pass < 2 && !claimed; pass++) {
         for (int i = 0; i < HEATING_ROOMS; i++) {
             heating_room_t *room = &s_rooms[i];
             const char *match = pass == 0 ? room->cfg.trv_topic : room->cfg.sensor_topic;
             if (match == NULL || match[0] == 0) continue;
             if ((int)strlen(match) != topic_len || memcmp(match, topic, topic_len) != 0) continue;
 
-            ESP_LOGI(TAG, "%s: %s", room->cfg.name, seen);
+            claimed = true;
             if (pass == 0) {
                 /* One zigbee2mqtt payload carries everything the card needs. */
                 apply_payload(&room->target, data, data_len, "current_heating_setpoint");
@@ -363,9 +399,10 @@ void heating_on_mqtt_message(const char *topic, int topic_len, const char *data,
             }
             /* Whatever the product mirrors changed: wake the screen and repaint. */
             heating_ui_poke();
-            return;
+            return;                       /* one room owns a topic */
         }
     }
+    ESP_LOGD(TAG, "message on a topic no room watches — ignored");
 }
 
 void heating_broker_ready(bool online)
@@ -388,12 +425,19 @@ void heating_broker_ready(bool online)
     for (int i = 0; i < HEATING_ROOMS; i++) {
         if (s_rooms[i].cfg.trv_topic[0]) subscribed += (app_mqtt_subscribe(s_rooms[i].cfg.trv_topic) >= 0);
         if (s_rooms[i].cfg.sensor_topic[0]) subscribed += (app_mqtt_subscribe(s_rooms[i].cfg.sensor_topic) >= 0);
+        /* zigbee2mqtt answers 'bridge/devices' with the bridge's device table;
+         * not needed per room, but it is the first thing an operator wants to
+         * see when no state ever arrives. */
+        ESP_LOGD(TAG, "%s: state '%s', setpoint command '%s'", s_rooms[i].cfg.name,
+                 s_rooms[i].cfg.trv_topic, heating_room_command_topic(i));
     }
+    app_mqtt_subscribe("zigbee2mqtt/bridge/devices");
     /* zigbee2mqtt only publishes a state topic when something changes, so
      * nobody would hear from a TRV until a valve moves — request the current
      * state of every topic, as a Home Assistant device does when it starts. */
     int polled = heating_request_states();
     ESP_LOGI(TAG, "subscribed to %d room topic(s); requested fresh state of %d", subscribed, polled);
+    heating_log_diag();
 }
 
 int heating_request_states(void)
@@ -421,6 +465,32 @@ void heating_factory_reset(void)
     ESP_LOGW(TAG, "factory reset: wiping settings");
     nvs_flash_erase();
     esp_restart();
+}
+
+void heating_log_diag(void)
+{
+    ESP_LOGI(TAG, "--- mqtt diag: wifi '%s', broker '%s', user '%s', session %s, %d/%d rooms reporting",
+             app_mqtt_wifi_missing() ? "(none)" : "configured",
+             app_mqtt_broker_uri(),
+             app_mqtt_user()[0] ? app_mqtt_user() : "(none)",
+             app_mqtt_session_up() ? "up" : "down",
+             heating_rooms_reporting(), HEATING_ROOMS);
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        int16_t tenth = 0;
+        bool stale = true;
+        int64_t seen = 0;
+        bool have = heating_room_current(&s_rooms[i], &tenth, &stale, &seen);
+        ESP_LOGI(TAG, "  %-12s state '%s'  setpoint '%s'  sensor '%s'",
+                 s_rooms[i].cfg.name, s_rooms[i].cfg.trv_topic,
+                 heating_room_command_topic(i),
+                 s_rooms[i].cfg.sensor_topic[0] ? s_rooms[i].cfg.sensor_topic : "(none)");
+        ESP_LOGI(TAG, "  %-12s target %.1f, setpoint reported %s, current %s%.1f%s (mode %s)",
+                 s_rooms[i].cfg.name, s_rooms[i].read_target / 10.0,
+                 s_rooms[i].target.valid ? "yes" : "no",
+                 have ? "" : "none ", have ? tenth / 10.0 : 0.0,
+                 (have && stale) ? " (stale)" : "",
+                 s_rooms[i].mode == HEATING_HEATING ? "heat" : "off");
+    }
 }
 
 void heating_reload_cfg(void)

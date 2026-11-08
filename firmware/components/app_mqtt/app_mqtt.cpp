@@ -146,14 +146,33 @@ esp_mqtt_client_handle_t app_mqtt_client(void)
 
 int app_mqtt_subscribe(const char *topic)
 {
-    if (s_client == NULL || !s_connected || topic == NULL || topic[0] == 0) return -1;
-    return esp_mqtt_client_subscribe(s_client, topic, 0);
+    if (s_client == NULL || !s_connected || topic == NULL || topic[0] == 0) {
+        ESP_LOGW(TAG, "SUBSCRIBE not sent (session %s): '%s'",
+                 s_connected ? "up" : "down", topic ? topic : "(null)");
+        return -1;
+    }
+    int id = esp_mqtt_client_subscribe(s_client, topic, 0);
+    ESP_LOGI(TAG, "SUBSCRIBE '%s' -> msg id %d", topic, id);
+    return id;
 }
 
+int app_mqtt_subscribe_qos(const char *topic)
+{
+    return app_mqtt_subscribe(topic);
+}
+
+/* Every publish goes through here and is logged: a setpoint that "did nothing"
+ * is visible immediately as either never sent, or sent to the wrong topic. */
 int app_mqtt_publish(const char *topic, const char *data, int len, int qos, int retain)
 {
-    if (s_client == NULL || topic == NULL) return -1;
-    return esp_mqtt_client_publish(s_client, topic, data, len, qos, retain);
+    if (s_client == NULL || topic == NULL) {
+        ESP_LOGW(TAG, "PUBLISH not sent (no client): '%s'", topic ? topic : "(null)");
+        return -1;
+    }
+    int id = esp_mqtt_client_publish(s_client, topic, data, len, qos, retain);
+    ESP_LOGI(TAG, "PUBLISH '%s' qos%d retain%d (%d B) -> msg id %d: %.*s",
+             topic, qos, retain, len, id, len > 0 ? len : 0, data ? data : "");
+    return id;
 }
 
 void app_mqtt_set_data_handler(void (*handler)(const char *topic, int topic_len,

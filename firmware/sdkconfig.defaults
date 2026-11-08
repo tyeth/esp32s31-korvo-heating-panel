@@ -21,8 +21,17 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 CONFIG_NEWLIB_NANO_FORMAT=y
 
-# Logging
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# Diagnostics are ON for this build: the panel is being brought up in the field,
+# and a silent device is the one thing that cannot be debugged. Every tag — ours,
+# esp-mqtt's, the TLS layer's, the Wi-Fi driver's — logs at VERBOSE, so the whole
+# MQTT conversation (connect, subscribe, publish, every received payload) appears
+# on the console/UART. Leaving the MAXIMUM at its default keeps it equal to the
+# default level (VERBOSE); the int symbol is what the preprocessor sees.
+CONFIG_LOG_DEFAULT_LEVEL_VERBOSE=y
+# CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT not set  (it is the default choice)
+
+# Logging: the default level is VERBOSE (set above); the maximum level
+# follows it, so esp_log_level_set() can still be used at runtime.
 
 # Stack sizes
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
@@ -62,7 +71,9 @@ CONFIG_LV_FONT_MONTSERRAT_46=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
 CONFIG_LV_USE_QRCODE=y
 CONFIG_ESP_TASK_WDT_INIT=y
-CONFIG_ESP_TASK_WDT_PANIC=y
+# Log, don't reboot: this is a VERBOSE diagnostic build, and a slow tag-level log
+# line must not cost the panel its boot. Idle-task starvation still panics.
+# CONFIG_ESP_TASK_WDT_PANIC is not set
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y

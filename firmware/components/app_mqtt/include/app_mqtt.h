@@ -91,6 +91,9 @@ int app_mqtt_subscribe(const char *topic);
 /** Publish @p data on @p topic. -1 when there is no session. */
 int app_mqtt_publish(const char *topic, const char *data, int len, int qos, int retain);
 
+/** Subscribe (and log) @p topic at QoS 0. -1 while offline. */
+int app_mqtt_subscribe_qos(const char *topic);
+
 /** Install the handler that receives EVERY MQTT_EVENT_DATA — (topic,
  *  topic_len, data, data_len) — whatever topic the client forwards. Call it
  *  before app_mqtt_init(). */

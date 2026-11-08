@@ -89,6 +89,10 @@ int16_t heating_room_target_ui(const heating_room_t *room);
 /** How many rooms have a reading younger than HEATING_STALE_S. */
 int heating_rooms_reporting(void);
 
+/** The zigbee2mqtt COMMAND topic a room's setpoint is published to (the state
+ *  topic is what is subscribed; the two differ). Never NULL. */
+const char *heating_room_command_topic(int idx);
+
 /** Restart the staleness clock for every reading (used on a transport change). */
 void heating_mark_all_stale(void);
 
@@ -207,6 +211,11 @@ void heating_reload_cfg(void);
 
 /** Wipe the saved Wi-Fi/broker/room settings and reboot into onboarding. */
 void heating_factory_reset(void);
+
+/** Log everything the panel knows about its link and its topics, at INFO: the
+ *  MQTT config, the session, and every room's state and command topic. Called
+ *  once per broker session and by the console `mqtt-diag`. */
+void heating_log_diag(void);
 
 #ifdef __cplusplus
 }

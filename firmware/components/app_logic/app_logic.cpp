@@ -40,8 +40,9 @@ static void heating_console_usage(void)
     for (int i = 0; i < HEATING_ROOMS; i++) {
         heating_room_t *r = heating_room(i);
         int16_t t = heating_room_target_ui(r);
-        printf("  %d  %-12s target %d.%d  %s\n", i, r->cfg.name,
-               (int)(t / 10), (int)((t % 10 + 10) % 10), r->cfg.trv_topic);
+        printf("  %d  %-12s target %d.%d  state %s\n        setpoint -> %s\n", i, r->cfg.name,
+               (int)(t / 10), (int)((t % 10 + 10) % 10), r->cfg.trv_topic,
+               heating_room_command_topic(i));
     }
     /* What the panel thinks of its own link — the first thing to check when a
      * card sits empty or greyed. */
@@ -49,6 +50,15 @@ static void heating_console_usage(void)
            app_mqtt_wifi_missing() ? "not configured" : "configured",
            app_mqtt_session_up() ? "up" : "down",
            heating_rooms_reporting(), HEATING_ROOMS, HEATING_STALE_S);
+}
+
+static int heating_console_cmd(int argc, char **argv);
+
+static int mqtt_diag_cmd(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    heating_log_diag();
+    return 0;
 }
 
 static int heating_console_cmd(int argc, char **argv)
@@ -97,6 +107,15 @@ void heating_console_register(void)
     c.help = "Show the rooms / set a target: heating set <room> <\xC2\xB0" "C>";
     c.func = &heating_console_cmd;
     esp_console_cmd_register(&c);
+
+    /* One command for the whole MQTT picture: what is configured, whether the
+     * session is up, and every room's state/setpoint/sensor topic with what has
+     * been heard on it. */
+    esp_console_cmd_t d = {};
+    d.command = "mqtt-diag";
+    d.help = "Log the MQTT config, session and every room topic with its readings";
+    d.func = &mqtt_diag_cmd;
+    esp_console_cmd_register(&d);
 }
 
 /* ── panel init ──────────────────────────────────────────────────────── */

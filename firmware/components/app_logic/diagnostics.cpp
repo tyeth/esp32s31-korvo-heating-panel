@@ -108,7 +108,10 @@ static void zc_boot_cnt_init(void)
 /* behaviors/task_watchdog (WDT) */
 static void zc_wdt_init(void)
 {
-    ESP_LOGI(TAG, "Task watchdog enabled (10s timeout, panics on starvation)");
+    /* Chatter from the app/tag level is verbosity, not a fault — a VERBOSE
+     * build should not reboot the panel for a slow log line. Idle-task
+     * starvation still panics, which is the check that matters. */
+    ESP_LOGI(TAG, "Task watchdog enabled (10s timeout, log only; idle starvation still panics)");
 }
 
 void diagnostics_logic_init(void)
