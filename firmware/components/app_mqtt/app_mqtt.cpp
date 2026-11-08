@@ -299,10 +299,9 @@ static void net_task(void *arg)
              * the limits of a small task, and doing it once, after the storm of
              * events that follows an association, is what keeps boot predictable. */
             if (s_net_debounce == NULL) {
-                const esp_timer_create_args_t args = {
-                    .callback = &net_start_cb,
-                    .name = "mqtt_net_start",
-                };
+                esp_timer_create_args_t args = {};
+                args.callback = &net_start_cb;
+                args.name = "mqtt_net_start";
                 esp_timer_create(&args, &s_net_debounce);
             }
             if (s_net_debounce) {
@@ -317,10 +316,9 @@ static void net_task(void *arg)
         if (ev.base == WIFI_EVENT && ev.id == WIFI_EVENT_STA_DISCONNECTED) {
             ESP_LOGW(TAG, "Wi-Fi disconnected — retrying in %d s", RETRY_BACKOFF_S);
             if (s_retry_timer == NULL) {
-                const esp_timer_create_args_t args = {
-                    .callback = &wifi_retry_cb,
-                    .name = "mqtt_wifi_retry",
-                };
+                esp_timer_create_args_t args = {};
+                args.callback = &wifi_retry_cb;
+                args.name = "mqtt_wifi_retry";
                 esp_timer_create(&args, &s_retry_timer);
             }
             if (s_retry_timer) {
@@ -470,7 +468,9 @@ void app_mqtt_ap_start(void)
     }
 
     if (s_ap_timer == NULL) {
-        const esp_timer_create_args_t args = { .callback = &ap_stop_cb, .name = "mqtt_ap_idle" };
+        esp_timer_create_args_t args = {};
+        args.callback = &ap_stop_cb;
+        args.name = "mqtt_ap_idle";
         esp_timer_create(&args, &s_ap_timer);
     }
     if (s_ap_timer) {
