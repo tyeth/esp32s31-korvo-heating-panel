@@ -74,7 +74,7 @@ static const char *TAG = "heating_voice";
 #define HALF_MIN  16     /* "… N and a half" / "… N point five" */
 #define HALF_MAX  23
 #define PAIR_MIN  19     /* "set the A and the B to N"       */
-#define PAIR_MAX  22
+#define PAIR_MAX  21
 
 /* The rooms that exist in the house but carry no smart TRV — naming one gets
  * "Kitchen has no smart TRV" instead of silence (spec failureModes). */
@@ -90,6 +90,10 @@ typedef enum : uint8_t {
     ACT_SET_BARE,     /* "<room> N"                              */
     ACT_SET_BARE_HALF,
     ACT_SET_BARE_P5,
+    ACT_NUM,          /* a bare "N" -> the selected room; also the value
+                       * evidence the tail passes read, with no grammar swap */
+    ACT_NUM_HALF,
+    ACT_NUM_P5,
     ACT_SET_ALL,      /* every room -> tenth                     */
     ACT_SET_PAIR,     /* room_a and room_b -> tenth              */
     ACT_WARM,         /* room_a (or the selected room when -1) +1 °C */
@@ -153,6 +157,15 @@ static void phrase_text(int i, char *buf, size_t len)
             break;
         case ACT_SET_BARE_P5:
             snprintf(buf, len, "%s %d point five", room_name(p->room_a), deg);
+            break;
+        case ACT_NUM:
+            snprintf(buf, len, "%d", deg);
+            break;
+        case ACT_NUM_HALF:
+            snprintf(buf, len, "%d and a half", deg);
+            break;
+        case ACT_NUM_P5:
+            snprintf(buf, len, "%d point five", deg);
             break;
         case ACT_SET_ALL:
             snprintf(buf, len, "set all rooms to %d", deg);
@@ -220,6 +233,16 @@ static void build_table(void)
             }
         }
     }
+    /* Bare values, resident in the ONE grammar: "23" spoken live sets the
+     * selected room, and the tail passes read these same phrases as value
+     * evidence — no runtime grammar swap, no 15-second FST rebuild, none of
+     * the idle starvation that rebooted the panel mid-conversation. */
+    for (int d = FULL_MIN; d <= FULL_MAX; d++) table_push(ACT_NUM, -1, -1, (int16_t)(d * 10));
+    for (int d = HALF_MIN; d <= HALF_MAX; d++) {
+        table_push(ACT_NUM_HALF, -1, -1, (int16_t)(d * 10 + 5));
+        table_push(ACT_NUM_P5,   -1, -1, (int16_t)(d * 10 + 5));
+    }
+
     table_push(ACT_WARM, -1, -1, 0);
     table_push(ACT_COOL, -1, -1, 0);
     for (int r = 0; r < HEATING_ROOMS; r++) {
@@ -231,22 +254,15 @@ static void build_table(void)
     for (int i = 0; i < VOICE_NO_TRV_COUNT; i++) table_push(ACT_NO_TRV, i, -1, 0);
 }
 
-/* ── the two grammars ─────────────────────────────────────────────────
+/* ── one grammar, built once ──────────────────────────────────────────
  *
- * Full sentences carry too many near-neighbours for mn7_en to separate
- * reliably ("twenty two" lost to "sixteen" inside a 396-phrase grammar), so a
- * low-confidence match is never applied: the panel keeps the part the
- * candidates agree on (the room), swaps MultiNet to a NUMBERS-ONLY grammar —
- * 48 phrases instead of 396, where values are acoustically unambiguous — and
- * asks for just the temperature. The swap runs on the recogniser's own task
- * (no concurrent detect), and the full grammar is restored after the answer,
- * a cancel, or a timeout. */
-
-#define NUM_ID_BASE    3000
-#define NUM_ID_CANCEL  3999
-static bool s_num_grammar = false;        /* which grammar MultiNet holds now */
-static int16_t s_num_tenth[64];
-static int s_num_n = 0;
+ * There used to be a second, numbers-only grammar swapped in at runtime for
+ * the tail passes. Each swap rebuilt an FST on the recogniser's task — the
+ * full one took ~15 s of solid CPU, starved the idle task, and the task
+ * watchdog rebooted the panel when a second command arrived mid-rebuild. The
+ * bare-number phrases (ACT_NUM*) live in the ONE grammar now: the tail passes
+ * read them as value evidence, and spoken live, a bare "23" sets the room
+ * selected on screen. Nothing is ever rebuilt after boot. */
 
 static int add_full_grammar(void)
 {
@@ -261,48 +277,6 @@ static int add_full_grammar(void)
         }
     }
     return added;
-}
-
-static int add_number_grammar(void)
-{
-    int added = 0;
-    char phrase[VOICE_PHRASE_MAX];
-    s_num_n = 0;
-    for (int d = FULL_MIN; d <= FULL_MAX && s_num_n < 63; d++) {
-        snprintf(phrase, sizeof(phrase), "%d", d);
-        s_num_tenth[s_num_n] = (int16_t)(d * 10);
-        if (esp_mn_commands_add(NUM_ID_BASE + s_num_n, phrase) == ESP_OK) added++;
-        s_num_n++;
-    }
-    for (int d = HALF_MIN; d <= HALF_MAX && s_num_n < 63; d++) {
-        snprintf(phrase, sizeof(phrase), "%d and a half", d);
-        s_num_tenth[s_num_n] = (int16_t)(d * 10 + 5);
-        if (esp_mn_commands_add(NUM_ID_BASE + s_num_n, phrase) == ESP_OK) added++;
-        s_num_n++;
-        snprintf(phrase, sizeof(phrase), "%d point five", d);
-        s_num_tenth[s_num_n] = (int16_t)(d * 10 + 5);
-        if (esp_mn_commands_add(NUM_ID_BASE + s_num_n, phrase) == ESP_OK) added++;
-        s_num_n++;
-    }
-    if (esp_mn_commands_add(NUM_ID_CANCEL, "cancel") == ESP_OK) added++;
-    return added;
-}
-
-/* Swap what MultiNet recognises. Runs only on the recogniser's task (the
- * command/timeout handlers) or at init, so detect never races the rebuild. */
-static void set_grammar(bool numbers)
-{
-    if (s_num_grammar == numbers && s_registered) return;
-    uint32_t heap_before = esp_get_free_heap_size();
-    esp_mn_commands_clear();
-    int added = numbers ? add_number_grammar() : add_full_grammar();
-    esp_mn_commands_update();
-    s_num_grammar = numbers;
-    /* The heap delta watches for a leak in the repeated runtime rebuilds: a
-     * panel that crashes after many voice attempts starts as a slow bleed here. */
-    ESP_LOGI(TAG, "grammar: %s (%d phrases, heap %u -> %u)",
-             numbers ? "numbers only" : "full", added,
-             (unsigned)heap_before, (unsigned)esp_get_free_heap_size());
 }
 
 /**
@@ -398,6 +372,7 @@ static bool phrase_is_set(const voice_phrase_t *p)
         case ACT_SET: case ACT_SET_NOTHE: case ACT_SET_NOTO:
         case ACT_SET_HALF: case ACT_SET_P5:
         case ACT_SET_BARE: case ACT_SET_BARE_HALF: case ACT_SET_BARE_P5:
+        case ACT_NUM: case ACT_NUM_HALF: case ACT_NUM_P5:
         case ACT_SET_ALL: case ACT_SET_PAIR:
             return true;
         default:
@@ -431,7 +406,8 @@ static void apply_scope(const voice_phrase_t *p, int16_t tenth)
         report_result(res, what, tenth);
         return;
     }
-    apply(p->room_a, tenth);
+    /* A bare number names no room: it goes to the room selected on screen. */
+    apply(p->room_a >= 0 ? p->room_a : s_sel_room, tenth);
 }
 
 static void too_uncertain(void)
@@ -565,7 +541,6 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
      *   - tail hears something else entirely  -> nothing is applied
      */
     int16_t v_s = live_p->tenth;
-    set_grammar(true);
     static const size_t k_tails_s10[] = { 15, 25, 40 };   /* seconds x10 */
     int best_tenth = -1, best_npct = 0;
     for (size_t t = 0; t < sizeof(k_tails_s10) / sizeof(k_tails_s10[0]); t++) {
@@ -573,11 +548,17 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
         if (tn > n) tn = n;
         int npct = 0;
         int nid = app_audio_decode_buffer(work + (n - tn), tn + tail_zeros, &npct);
-        ESP_LOGI(TAG, "reinterpret: tail %.1fs -> id %d at %d%%",
-                 k_tails_s10[t] / 10.0, nid, npct);
-        if (nid >= NUM_ID_BASE && nid < NUM_ID_BASE + s_num_n && npct > best_npct) {
+        /* Only a BARE-NUMBER phrase counts as tail evidence: a tail that
+         * re-matches a whole sentence is just the same reading again. */
+        int ni = nid - VOICE_ID_SET_BASE;
+        const voice_phrase_t *np = (ni >= 0 && ni < s_table_n) ? &s_table[ni] : NULL;
+        bool is_num = np != NULL && (np->act == ACT_NUM || np->act == ACT_NUM_HALF ||
+                                     np->act == ACT_NUM_P5);
+        ESP_LOGI(TAG, "reinterpret: tail %.1fs -> id %d at %d%%%s",
+                 k_tails_s10[t] / 10.0, nid, npct, is_num ? " (number)" : "");
+        if (is_num && npct > best_npct) {
             best_npct = npct;
-            best_tenth = s_num_tenth[nid - NUM_ID_BASE];
+            best_tenth = np->tenth;
         }
         if (tn >= n) break;
     }
@@ -589,10 +570,6 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
      * contradiction must beat that ceiling to block anything; an extension is
      * structurally tied to the agreed value (noise rarely lands on one), so
      * it corrects from the ordinary floor; anything weaker is ignored. */
-    /* The OUTCOME goes first — the person is standing at the panel — and the
-     * 377-phrase grammar rebuild (seconds, on this task) follows; the next
-     * window cannot open until this task loops anyway, and the feed stays
-     * paused until the full grammar is back. */
     #define VOICE_TAIL_VETO_PCT 22
     if (best_tenth >= 0 && best_npct >= VOICE_FLOOR_PCT &&
         best_tenth != v_s && value_extends(v_s, best_tenth)) {
@@ -614,7 +591,6 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
                  best_tenth == v_s ? " (tail confirms)" : "");
         apply_scope(live_p, v_s);
     }
-    set_grammar(false);
     app_audio_pause_feed(false);
 }
 
@@ -625,14 +601,6 @@ void heating_voice_apply_command(int phrase_id)
     heating_ui_listening(false);               /* the window closes on a match */
 
     int pct = s_heard_pct;
-
-    /* A number-grammar id arriving HERE means a live detection fired while
-     * the reinterpretation grammar was in place (it never should: the window
-     * is closed during reinterpretation) — restore and drop it. */
-    if (phrase_id >= NUM_ID_BASE) {
-        set_grammar(false);
-        return;
-    }
 
     int i = phrase_id - VOICE_ID_SET_BASE;
     if (i < 0 || i >= s_table_n) return;
@@ -711,11 +679,6 @@ void heating_voice_not_understood(void)
 {
     heating_ui_listening(false);
     if (!s_registered) return;
-    if (s_num_grammar) {
-        /* Should not happen (the window is closed while reinterpreting), but
-         * never leave the panel listening for bare numbers. */
-        set_grammar(false);
-    }
     /* The live decoder gave up; the capture may still hold a command — decode
      * the same audio again before giving up (banners come from there). */
     reinterpret_window(NULL, 0);
