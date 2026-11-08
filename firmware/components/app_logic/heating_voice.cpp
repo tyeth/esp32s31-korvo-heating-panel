@@ -18,13 +18,16 @@
  * value" is an enumerated grid, sized against ESP_MN_MAX_PHRASE_NUM (400):
  *
  *   "set the <room> to <5..30>"                       every room, whole degrees
+ *   "set <room> to <15..25>"                          the same without "the" —
+ *                                                     an exact-phrase matcher
+ *                                                     hears them as different
  *   "<room> <15..25>"                                 the short form, home range
- *   "set the <room> to <15..24> and a half"           halves, both forms,
- *   "<room> <15..24> and a half"                      said either way:
- *   "set the <room> to <15..24> point five"           "… and a half" or
- *   "<room> <15..24> point five"                      "… point five"
+ *   "set the <room> to <16..23> and a half"           halves, both forms,
+ *   "<room> <16..23> and a half"                      said either way:
+ *   "set the <room> to <16..23> point five"           "… and a half" or
+ *   "<room> <16..23> point five"                      "… point five"
  *   "set all rooms to <5..30>"                        the whole house at once
- *   "set the <roomA> and the <roomB> to <18..21>"     two rooms, either order
+ *   "set the <roomA> and the <roomB> to <19..21>"     two rooms, either order
  *   "warm up [the <room>]" / "cool down [the <room>]" ±1 °C
  *   "cancel" / "stop"                                 nothing is published
  *   "set the kitchen|bedroom to 20"                   "… has no smart TRV"
@@ -51,16 +54,18 @@ static const char *TAG = "heating_voice";
 #define VOICE_PHRASE_MAX    64
 
 /* The whole-degree ranges each phrase family enumerates. Together they stay
- * under MultiNet's 400-phrase ceiling (396 with four rooms): the halves say
- * "and a half" or "point five" in both the full and the bare form, paid for
- * by a narrower two-room conjunction range. */
+ * under MultiNet's 400-phrase ceiling (396 with four rooms): "set <room> to
+ * N" without "the" is its own family — an exact-phrase matcher does not
+ * forgive a dropped article — paid for by narrower half and pair ranges. */
 #define FULL_MIN   5     /* "set the <room> to N"            */
 #define FULL_MAX  30
+#define NOTHE_MIN 15     /* "set <room> to N"                */
+#define NOTHE_MAX 25
 #define BARE_MIN  15     /* "<room> N"                       */
 #define BARE_MAX  25
-#define HALF_MIN  15     /* "… N and a half" / "… N point five" */
-#define HALF_MAX  24
-#define PAIR_MIN  18     /* "set the A and the B to N"       */
+#define HALF_MIN  16     /* "… N and a half" / "… N point five" */
+#define HALF_MAX  23
+#define PAIR_MIN  19     /* "set the A and the B to N"       */
 #define PAIR_MAX  21
 
 /* The rooms that exist in the house but carry no smart TRV — naming one gets
@@ -70,6 +75,7 @@ static const char *const k_unheated[VOICE_NO_TRV_COUNT] = { "Kitchen", "Bedroom"
 
 typedef enum : uint8_t {
     ACT_SET,          /* room_a -> tenth                         */
+    ACT_SET_NOTHE,    /* same, said without "the"                */
     ACT_SET_HALF,     /* same, said "… and a half"               */
     ACT_SET_P5,       /* same, said "… point five"               */
     ACT_SET_BARE,     /* "<room> N"                              */
@@ -117,6 +123,9 @@ static void phrase_text(int i, char *buf, size_t len)
     switch (p->act) {
         case ACT_SET:
             snprintf(buf, len, "set the %s to %d", room_name(p->room_a), deg);
+            break;
+        case ACT_SET_NOTHE:
+            snprintf(buf, len, "set %s to %d", room_name(p->room_a), deg);
             break;
         case ACT_SET_HALF:
             snprintf(buf, len, "set the %s to %d and a half", room_name(p->room_a), deg);
@@ -178,6 +187,7 @@ static void build_table(void)
     s_table_n = 0;
     for (int r = 0; r < HEATING_ROOMS; r++) {
         for (int d = FULL_MIN; d <= FULL_MAX; d++) table_push(ACT_SET, r, -1, (int16_t)(d * 10));
+        for (int d = NOTHE_MIN; d <= NOTHE_MAX; d++) table_push(ACT_SET_NOTHE, r, -1, (int16_t)(d * 10));
         for (int d = BARE_MIN; d <= BARE_MAX; d++) table_push(ACT_SET_BARE, r, -1, (int16_t)(d * 10));
         for (int d = HALF_MIN; d <= HALF_MAX; d++) {
             table_push(ACT_SET_HALF,      r, -1, (int16_t)(d * 10 + 5));
@@ -314,6 +324,7 @@ void heating_voice_apply_command(int phrase_id)
 
     switch (p->act) {
         case ACT_SET:
+        case ACT_SET_NOTHE:
         case ACT_SET_HALF:
         case ACT_SET_P5:
         case ACT_SET_BARE:
@@ -373,7 +384,7 @@ void heating_voice_apply_command(int phrase_id)
  * too many to print one by one, so the log names the families instead. */
 void heating_voice_print_vocabulary(void)
 {
-    ESP_LOGI(TAG, "voice vocabulary: %d phrases — \"set the <room> to <%d..%d>\", "
+    ESP_LOGI(TAG, "voice vocabulary: %d phrases — \"set [the] <room> to <%d..%d>\", "
                   "\"<room> <%d..%d>\", \"... <%d..%d> and a half | point five\", "
                   "\"set all rooms to <N>\", \"set the <A> and the <B> to <%d..%d>\", "
                   "\"warm up / cool down [the <room>]\", \"cancel\", \"stop\"",
