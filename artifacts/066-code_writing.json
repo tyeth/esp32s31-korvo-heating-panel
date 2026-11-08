@@ -1,0 +1,37 @@
+{
+  "agent": "code_writing",
+  "seq": 66,
+  "savedAt": "2026-11-08T01:15:40.367Z",
+  "report": {
+    "result": "pass",
+    "summary": "Cleared the project's only remaining compile warnings (three partially initialised timer configs in app_mqtt) and left the emulated Wi-Fi driver crash alone — four identical crashes after three product-side attempts made further radio churn unjustified. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The reported failure is the fourth byte-identical crash (same unmapped PC, same cycle count) inside the emulated Wi-Fi driver's probe-request path, after three different product-side sequencing changes and with no product frame on the path. Both the functional report and the review now conclude the same thing, so I did not change the radio again — that would be churn, not a fix. It stays a documented hardware question.",
+      "I fixed the one thing in this round that is genuinely the product's: the three partially designated esp_timer_create_args_t initialisers in app_mqtt were the only project-code warnings in the build (nine of them), which makes a future real one invisible. Zero-init then assign.",
+      "Left the two owner-level deviations alone again: adding a whole-number 21 phrase changes what the device listens for, and restoring SET+MODE changes how it wipes itself — both are the spec's behaviour, not mine to redefine without a decision."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cd410 (2937872 B) in a 0x380000 partition, 20% free; the app_mqtt compile step now emits no warnings from product code; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "info — nine -Wmissing-field-initializers warnings in app_mqtt (partially designated esp_timer_create_args_t)",
+        "fix": "all three initialisers zero-initialised then assigned (net debounce, Wi-Fi retry, AP idle timer) — the build's project-code warning channel is clean again"
+      },
+      {
+        "finding": "info — commissioned-reboot crash inside the Wi-Fi driver (4th identical round)",
+        "fix": "unchanged by design: evidence is conclusive that it is the emulated driver's scan path, not product logic; carried as a hardware question with the exact fault signature"
+      },
+      {
+        "finding": "info — standing deviations (single-button factory reset, no 'set the office to 21' phrase)",
+        "fix": "unchanged pending the owner's decision; both flagged in the previous rounds and again here"
+      }
+    ],
+    "openQuestions": [
+      "The commissioned-reboot behaviour on real silicon is the one open stability question; if it reproduces there, the lever is the Wi-Fi driver's scan/init configuration rather than app_mqtt's sequencing.",
+      "The voice vocabulary gap and the factory-reset gesture need a decision from the owner before I change behaviour the spec describes."
+    ]
+  }
+}
