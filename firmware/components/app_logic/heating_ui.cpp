@@ -200,7 +200,85 @@ static void touch_hit(int x, int y)
     }
 }
 
-/* ── painting ────────────────────────────────────────────────────────── */
+static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t color);
+static void popup_close(void);
+static void heating_ui_settings_popup(void);
+
+/* ── the panel's settings: one overlay, never a second screen ──────────
+ *
+ * The settings form is the web page. The panel has nothing to edit, but the
+ * gear on the touch panel is what people press: it opens a small overlay OVER
+ * the cards saying where the page is, and the cards stay exactly where they
+ * were. Nothing here creates, loads or clears an LVGL screen — that is what a
+ * blank panel would look like. */
+static lv_obj_t *s_settings_popup = NULL;
+
+static void popup_close(void)
+{
+    if (s_settings_popup != NULL) {
+        lv_obj_delete(s_settings_popup);
+        s_settings_popup = NULL;
+    }
+}
+
+static void on_popup_event(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        touch_activity();
+        popup_close();
+    }
+}
+
+void heating_ui_settings_enter(const char *source)
+{
+    /* The form lives in the browser, so the panel has nothing to leave and no
+     * reason to stop drawing: show where it is and keep the cards up. */
+    (void)source;
+    touch_activity();
+    heating_ui_banner("Settings: korvo-heating.local/settings");
+    heating_ui_settings_popup();
+}
+
+void heating_ui_settings_popup(void)
+{
+    touch_activity();
+    if (!s_ui_ready || s_screen == NULL) return;
+    /* Created on the LVGL task (it holds the lock); the order is the port's. */
+    if (!lvgl_port_lock(1000)) return;
+    popup_close();
+
+    s_settings_popup = lv_obj_create(s_screen);
+    lv_obj_set_size(s_settings_popup, CARD_W + 120, 160);
+    lv_obj_center(s_settings_popup);
+    lv_obj_set_style_bg_color(s_settings_popup, lv_color_hex(0x1E1E1E), 0);
+    lv_obj_set_style_border_color(s_settings_popup, lv_color_hex(0xE0A06A), 0);
+    lv_obj_set_style_border_width(s_settings_popup, 2, 0);
+    lv_obj_set_style_radius(s_settings_popup, 12, 0);
+    lv_obj_set_style_pad_all(s_settings_popup, 14, 0);
+    lv_obj_remove_flag(s_settings_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = make_label(s_settings_popup, &lv_font_montserrat_16, lv_color_hex(0xE0A06A));
+    lv_label_set_text(title, "Settings are on the web page");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t *body = make_label(s_settings_popup, &lv_font_montserrat_14, lv_color_hex(0xCCCCCC));
+    lv_label_set_text(body, "Wi-Fi, the MQTT broker and the room topics:\n"
+                            "http://korvo-heating.local/settings\n"
+                            "(the IP is in the boot log)");
+    lv_obj_set_style_text_align(body, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(body, LV_ALIGN_TOP_MID, 0, 34);
+
+    lv_obj_t *hint = make_label(s_settings_popup, &lv_font_montserrat_10, lv_color_hex(0x888888));
+    lv_label_set_text(hint, "Tap anywhere to close");
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    lv_obj_add_flag(s_settings_popup, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_settings_popup, on_popup_event, LV_EVENT_PRESSED, NULL);
+
+    lvgl_port_unlock();
+}
+
+/* ── painting ─────────────────────────────────────────────────────────── */
 
 static void style_panel(lv_obj_t *obj)
 {
@@ -401,7 +479,7 @@ static void paint_all(void)
     paint_dimming();
 }
 
-/* ── painting / the LVGL timer ───────────────────────────────────────── */
+/* ── the LVGL timer ──────────────────────────────────────────────────── */
 
 /* Timers (banner expiry, listening bar, the clock, the dim decision) and the
  * refresh flag all live in one LVGL timer: a FreeRTOS task cannot paint when

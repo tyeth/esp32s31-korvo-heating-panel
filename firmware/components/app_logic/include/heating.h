@@ -136,7 +136,7 @@ esp_err_t heating_permit_join(void);
 void heating_log_level_apply_boot(void);
 
 /** The stored verbosity name: "ERROR", "WARN", "INFO", "DEBUG" or
- *  "VERBOSE" (the default when nothing was saved). */
+ *  "VERBOSE" (INFO until one is chosen). */
 const char *heating_log_level_get(void);
 
 /** Store and apply a verbosity (one of the names above). */
@@ -205,6 +205,10 @@ void heating_ui_rejected_ui(void);
 esp_err_t heating_ui_init(void);
 /** A press anywhere (touch or button) restores full brightness. */
 void heating_ui_touch_activity(void);
+/** Somebody reached for the settings: show where the web form is on the
+ *  dashboard (an overlay over the cards). It never leaves the cards — the
+ *  panel has no second screen to go to. */
+void heating_ui_settings_enter(const char *source);
 /** Product activity worth waking the screen for (a heard command, a setpoint). */
 void heating_ui_poke(void);
 

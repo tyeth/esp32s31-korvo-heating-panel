@@ -30,17 +30,20 @@ CONFIG_NEWLIB_NANO_FORMAT=y
 # suppressing.
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=1500
 
-# Diagnostics are ON for this build: the panel is being brought up in the field,
-# and a silent device is the one thing that cannot be debugged. Every tag — ours,
-# esp-mqtt's, the TLS layer's, the Wi-Fi driver's — logs at VERBOSE, so the whole
-# MQTT conversation (connect, subscribe, publish, every received payload) appears
-# on the console/UART. Leaving the MAXIMUM at its default keeps it equal to the
-# default level (VERBOSE); the int symbol is what the preprocessor sees.
-CONFIG_LOG_DEFAULT_LEVEL_VERBOSE=y
-# CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT not set  (it is the default choice)
-
-# Logging: the default level is VERBOSE (set above); the maximum level
-# follows it, so esp_log_level_set() can still be used at runtime.
+# Diagnostics stay readable: the panel is being brought up in the field and a
+# silent device cannot be debugged — but "readable" is not "everything".
+# CONFIG_LOG_DEFAULT_LEVEL_VERBOSE used to be set here and filled the console
+# with MIPI/LCD, ADC-oneshot, SPI-mem and Wi-Fi driver traffic. The build default
+# is now INFO for every IDF tag, the panel's own tags are raised to DEBUG from
+# log_level.cpp, and VERBOSE is one command away (`log * VERBOSE`, or the
+# log-level drop-down on the settings page). The MAXIMUM stays at its default
+# (above the default level), which is what lets esp_log_level_set() raise a tag
+# at runtime at all.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# The MAXIMUM stays at VERBOSE: it is the highest level esp_log_level_set() may
+# raise a tag to, and every tag raised at runtime depends on it (the panel's own
+# tags at DEBUG, `log * VERBOSE`, the settings page's drop-down).
+CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
 
 # Stack sizes
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

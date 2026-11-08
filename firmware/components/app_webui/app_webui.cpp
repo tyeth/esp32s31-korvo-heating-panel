@@ -188,13 +188,13 @@ void app_webui_chunk_begin(const char *content_type)
 void app_webui_send_chunk(const char *text)
 {
     if (s_settings_req == NULL || text == NULL) return;
-    httpd_resp_sendstr_chunk(s_settings_req, text);
+    httpd_resp_send_chunk(s_settings_req, text, HTTPD_RESP_USE_STRLEN);
 }
 
 void app_webui_chunk_end(void)
 {
     if (s_settings_req == NULL) return;
-    httpd_resp_sendstr_chunk(s_settings_req, NULL);
+    httpd_resp_send_chunk(s_settings_req, NULL, 0);
 }
 
 int app_webui_read_request(char *buf, size_t len)

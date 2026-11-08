@@ -133,8 +133,12 @@ static void form_parse(const char *body)
     }
 }
 
-/* ── rendering ───────────────────────────────────────────────────────── */
-
+/* ── rendering ───────────────────────────────────────────────────────────
+ *
+ * The page is streamed a piece at a time, each piece as a real HTTP chunk
+ * (httpd_resp_send_chunk with the length given): the page is far longer than
+ * a single send, and a non-chunked response is started with a Content-Length
+ * the httpd task cannot finish within its send timeout. */
 static void html_escape(const char *in, char *out, size_t len)
 {
     size_t w = 0;
@@ -386,6 +390,11 @@ static char s_body[3000];
 
 static esp_err_t settings_entry(void)
 {
+    /* Serving or applying the form never leaves the panel without its cards:
+     * the settings page is in the browser, and the LCD keeps drawing. Show the
+     * address there so the person holding the phone can see it too. */
+    heating_ui_settings_enter("web");
+
     form_reset();
 
     int total = 0, n;
