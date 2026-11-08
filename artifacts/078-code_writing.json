@@ -1,0 +1,49 @@
+{
+  "agent": "code_writing",
+  "seq": 78,
+  "savedAt": "2026-11-08T02:07:31.602Z",
+  "report": {
+    "result": "pass",
+    "summary": "Setpoints now publish to <state topic>/set/current_heating_setpoint (the command topic zigbee2mqtt acts on), and the build logs everything at VERBOSE: every MQTT publish/subscribe/received message, plus a new `mqtt-diag` command that prints topics, session and readings. Builds at 3.04 MB, 17 % free.",
+    "decisions": [
+      "Setpoints go to <state topic>/set/current_heating_setpoint now, not back into the state topic. That is the per-attribute command topic zigbee2mqtt actually acts on, and a state-topic publish is only an echo — which is why the TRVs never moved. A stored topic that already names /set or /get is used verbatim, so a household that prefers the aggregate /set form can keep it.",
+      "Configured VERBOSE logging at the product level (CONFIG_LOG_DEFAULT_LEVEL_VERBOSE, maximum following the default so esp_log_level_set still works), which turns on esp-mqtt's own transport logging and the TLS layer's as well. Verified in the built header: CONFIG_LOG_DEFAULT_LEVEL=5, CONFIG_LOG_MAXIMUM_LEVEL=5, app and bootloader alike.",
+      "Added explicit MQTT tracing at the transport level rather than relying on the library: every publish (topic, qos, retain, payload, msg id, and the ones refused as offline) and every subscribe is logged, and every received message is logged with topic and payload.",
+      "Added `mqtt-diag` (also run on each broker session): Wi-Fi/broker config, session state, and per room the state topic, the setpoint command topic, the sensor topic, the target, the reported setpoint, the current reading and the mode. This is the answer to 'nothing is going anywhere' without another guessing round.",
+      "Disabled watchdog panics (log-only) for this diagnostic build: a slow VERBOSE log line must not reboot the panel. Idle-task starvation still panics."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/sdkconfig.defaults",
+      "firmware/components/app_mqtt/app_mqtt.cpp",
+      "firmware/components/app_mqtt/include/app_mqtt.h",
+      "firmware/components/app_logic/heating.cpp",
+      "firmware/components/app_logic/include/heating.h",
+      "firmware/components/app_logic/app_logic.cpp",
+      "firmware/components/app_logic/diagnostics.cpp"
+    ],
+    "build": "esp32s31 success — 0x2e5470 (3036272 B) in a 0x380000 partition, 17% free (binary grew ~100 KB from LOG_VERBOSE_MAXIMUM); build/config/sdkconfig.h verified: CONFIG_LOG_DEFAULT_LEVEL=5, CONFIG_LOG_MAXIMUM_LEVEL=5; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "user request — total MQTT logging",
+        "fix": "VERBOSE default level for every tag incl. esp-mqtt/TLS plus explicit PUBLISH/SUBSCRIBE/IN tracing with topic, qos, retain, payload and msg id"
+      },
+      {
+        "finding": "user request — debug port enabled with verbose/debug printing",
+        "fix": "CONFIG_LOG_DEFAULT_LEVEL_VERBOSE with the maximum raised to match, so logs appear at boot without touching the console; `log <tag> <level>` still works and `mqtt-diag` dumps the whole MQTT picture on demand"
+      },
+      {
+        "finding": "user report — setpoints never reach the TRVs; state topics are the ones that work",
+        "fix": "setpoints published to <state topic>/set/current_heating_setpoint; the console and mqtt-diag print the exact command topic per room so the mapping is verifiable at a glance"
+      },
+      {
+        "finding": "risk — VERBOSE builds can trip the task watchdog on a slow log line",
+        "fix": "CONFIG_ESP_TASK_WDT_PANIC disabled (log only); idle-task starvation still panics"
+      }
+    ],
+    "openQuestions": [
+      "zigbee2mqtt's per-attribute form is what was requested; if a household's setup rejects /set/<attribute> the aggregate /set topic can be entered verbatim on the settings page without a rebuild.",
+      "The TRV/air-sensor payload parsing is unchanged and is now observable in the log (`heating: IN <topic> => <payload>`), which will show whether the configured state topics actually carry the JSON expected."
+    ]
+  }
+}
