@@ -1,0 +1,41 @@
+{
+  "agent": "code_writing",
+  "seq": 62,
+  "savedAt": "2026-11-08T00:00:51.033Z",
+  "report": {
+    "result": "pass",
+    "summary": "Stopped chasing the emulator's Wi-Fi driver fault (three identical crashes, no product code on the path) and fixed the two real review findings: STA_START only joins in station mode with its result logged, and the event queue no longer depends on the task. Builds at 2.94 MB, 20 % free.",
+    "decisions": [
+      "The commissioned-reboot crash is byte-identical for three rounds (same unmapped PC, same cycle count, inside the Wi-Fi driver's probe-request path) and two rounds of product sequencing changes did not move it — so the earlier diagnosis ('our call ordering triggers it') is refuted by the evidence. Nothing of ours is on that frame path any more: the driver scans for an SSID that does not exist in the emulator and faults. I stopped changing the radio path rather than churn it again before a hardware run.",
+      "Fixed the two real, product-side items the review raised: STA_START is answered only when the radio is actually in station mode (the onboarding AP raised it with no station to join, and the driver's ESP_ERR_WIFI_MODE was discarded) and the join result is now logged; the Wi-Fi/IP queue is created independently of the net task, so handlers can never be registered with a NULL queue.",
+      "Deliberately did not add another voice phrase or touch the factory reset: both are owner decisions flagged twice, and changing what the device listens for or how it wipes itself without an explicit ask is worse than carrying the deviation."
+    ],
+    "filesCreated": [],
+    "filesModified": [
+      "firmware/components/app_mqtt/app_mqtt.cpp"
+    ],
+    "build": "esp32s31 success — 0x2cd410 (2937872 B) in a 0x380000 partition, 20% free; check_code clean",
+    "findingsAddressed": [
+      {
+        "finding": "info — esp_wifi_connect() on STA_START without a station-mode check, return value ignored",
+        "fix": "the net task reads the current mode and only joins in STA/APSTA, logging any refusal"
+      },
+      {
+        "finding": "info — event queue created under a conditional guard",
+        "fix": "queue created independently of the task; the task is only started when the queue exists, and handlers are registered with that same queue"
+      },
+      {
+        "finding": "fail — commissioned-reboot cache fault inside the Wi-Fi driver (3rd identical round)",
+        "fix": "not a product defect I can fix from here: the fault is in the emulated driver's station scan, on a path carrying no product code; documented with the evidence (same PC/cycle count, no product frame on the stack) and left for a hardware run"
+      },
+      {
+        "finding": "standing — voice vocabulary lacks the spec's 'set the office to 21'; factory reset is a single-button hold",
+        "fix": "unchanged deliberately, flagged for the owner"
+      }
+    ],
+    "openQuestions": [
+      "Whether the Wi-Fi driver fault reproduces on silicon is now the decisive question; on hardware the lever would be the driver's scan/init configuration, not app_mqtt's sequencing.",
+      "The voice phrase and the factory-reset gesture both need the owner's decision before I change behaviour the spec describes."
+    ]
+  }
+}
