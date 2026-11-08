@@ -446,6 +446,27 @@ static void too_uncertain(void)
 #define VOICE_FLOOR_PCT      8
 #define VOICE_NUM_SURE_PCT   15
 
+/* True when @p ext is what @p base sounds like with MORE WORDS after it — the
+ * FST's early-exit shapes, in tenths of a degree:
+ *   twenty (200)        -> twenty one..twenty nine (210..290)
+ *   X                   -> X and a half / X point five (X+5)
+ *   six..nine (60..90)  -> sixteen..nineteen (160..190)
+ *   (five/fifteen and four/fourteen do not share a spoken prefix)
+ */
+static bool value_extends(int16_t base, int16_t ext)
+{
+    if (ext == base) return false;
+    if (ext == base + 5) return true;                       /* "... and a half" */
+    if (base % 10 == 0 && ext % 10 == 0) {
+        int b = base / 10, e = ext / 10;
+        if (b == 20 && e > 20 && e < 30) return true;       /* twenty -> twenty X */
+        if (b >= 6 && b <= 9 && e == b + 10) return true;   /* six -> sixteen ... */
+    }
+    /* twenty -> twenty X and a half: two words further along the same path. */
+    if (base == 200 && ext > 200 && ext < 300) return true;
+    return false;
+}
+
 static void normalize_pcm(int16_t *pcm, size_t n)
 {
     int peak = 0;
@@ -492,32 +513,83 @@ static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
     ESP_LOGI(TAG, "reinterpret: live %d%%, normalised pass id %d at %d%%",
              live_pct, id_a, pct_a);
 
-    /* No tail/number passes: they were tried and retired. They decode the
-     * same marginal audio the sentence passes saw (so they confirm nothing —
-     * a wrong value once carried a live and a tail pass at once), and the
-     * runtime grammar swap they needed rebuilt a 396-phrase FST on the
-     * recogniser's task, which aborted the whole panel. Two independent
-     * readings of the full sentence are the evidence; agreement is the test. */
-    free(work);
-
     /* The decision: the two SENTENCE readings must independently agree on the
      * action, the rooms and the value. Anything less is shown, not applied —
      * a wrong setpoint is worse than none. A timeout entry (no live match)
      * accepts the normalised pass alone only when it is outright sure. */
-    if (live_p != NULL && p_a != NULL &&
-        live_p->act == p_a->act && live_p->room_a == p_a->room_a &&
-        live_p->room_b == p_a->room_b && live_p->tenth == p_a->tenth &&
-        (live_pct >= VOICE_FLOOR_PCT || pct_a >= VOICE_FLOOR_PCT)) {
-        ESP_LOGI(TAG, "reinterpret: both readings agree — applying %d.%d",
-                 live_p->tenth / 10, (live_p->tenth % 10 + 10) % 10);
-        apply_scope(live_p, live_p->tenth);
+    bool agree = (live_p != NULL && p_a != NULL &&
+                  live_p->act == p_a->act && live_p->room_a == p_a->room_a &&
+                  live_p->room_b == p_a->room_b && live_p->tenth == p_a->tenth &&
+                  (live_pct >= VOICE_FLOOR_PCT || pct_a >= VOICE_FLOOR_PCT));
+    if (!agree) {
+        free(work);
+        if (live_p == NULL && p_a != NULL && pct_a >= VOICE_SURE_PCT) {
+            apply_scope(p_a, p_a->tenth);
+            return;
+        }
+        too_uncertain();
         return;
     }
-    if (live_p == NULL && p_a != NULL && pct_a >= VOICE_SURE_PCT) {
-        apply_scope(p_a, p_a->tenth);
+
+    /* Agreed on V — but the FST can exit early on a spoken prefix, and both
+     * readings truncate TOGETHER ("set bathroom to twenty four" has applied
+     * as "... to twenty"). So the value is checked once more against the
+     * SAME audio's tail with the numbers-only grammar (48 phrases, swapped at
+     * runtime — the detect task's stack was grown for the FST rebuild):
+     *   - tail silent or agrees with V        -> apply V
+     *   - tail hears an EXTENSION of V        -> apply the extension
+     *     (twenty -> twenty one..nine, X -> X and a half, six -> sixteen)
+     *   - tail hears something else entirely  -> nothing is applied
+     */
+    int16_t v_s = live_p->tenth;
+    set_grammar(true);
+    static const size_t k_tails_s10[] = { 15, 25, 40 };   /* seconds x10 */
+    int best_tenth = -1, best_npct = 0;
+    for (size_t t = 0; t < sizeof(k_tails_s10) / sizeof(k_tails_s10[0]); t++) {
+        size_t tn = k_tails_s10[t] * 1600;
+        if (tn > n) tn = n;
+        int npct = 0;
+        int nid = app_audio_decode_buffer(work + (n - tn), tn + tail_zeros, &npct);
+        ESP_LOGI(TAG, "reinterpret: tail %.1fs -> id %d at %d%%",
+                 k_tails_s10[t] / 10.0, nid, npct);
+        if (nid >= NUM_ID_BASE && nid < NUM_ID_BASE + s_num_n && npct > best_npct) {
+            best_npct = npct;
+            best_tenth = s_num_tenth[nid - NUM_ID_BASE];
+        }
+        if (tn >= n) break;
+    }
+    set_grammar(false);
+    free(work);
+
+    /* Tail evidence by strength, measured on this board: a mid-phrase
+     * fragment ("...room to twenty four" against a numbers grammar) scores
+     * garbage at up to ~20%, and once vetoed a CORRECT agreed value. So a
+     * contradiction must beat that ceiling to block anything; an extension is
+     * structurally tied to the agreed value (noise rarely lands on one), so
+     * it corrects from the ordinary floor; anything weaker is ignored. */
+    #define VOICE_TAIL_VETO_PCT 22
+    if (best_tenth >= 0 && best_npct >= VOICE_FLOOR_PCT &&
+        best_tenth != v_s && value_extends(v_s, best_tenth)) {
+        ESP_LOGI(TAG, "reinterpret: sentence said %d.%d but the tail heard its "
+                      "extension %d.%d (%d%%) — the FST truncated; applying the tail",
+                 v_s / 10, (v_s % 10 + 10) % 10,
+                 best_tenth / 10, (best_tenth % 10 + 10) % 10, best_npct);
+        apply_scope(live_p, best_tenth);
         return;
     }
-    too_uncertain();
+    if (best_tenth >= 0 && best_npct >= VOICE_TAIL_VETO_PCT &&
+        best_tenth != v_s && !value_extends(v_s, best_tenth)) {
+        ESP_LOGI(TAG, "reinterpret: tail contradicts the sentence (%d.%d vs %d.%d "
+                      "at %d%%) — nothing applied",
+                 best_tenth / 10, (best_tenth % 10 + 10) % 10,
+                 v_s / 10, (v_s % 10 + 10) % 10, best_npct);
+        too_uncertain();
+        return;
+    }
+    ESP_LOGI(TAG, "reinterpret: both readings agree — applying %d.%d%s",
+             v_s / 10, (v_s % 10 + 10) % 10,
+             best_tenth == v_s ? " (tail confirms)" : "");
+    apply_scope(live_p, v_s);
 }
 
 /* Called by the audio framework for one recognised phrase id. */

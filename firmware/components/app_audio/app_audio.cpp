@@ -119,13 +119,10 @@ void app_audio_voice_test(void)
         return;
     }
 
-    /* First, the control experiment: the recogniser on the RAW sample, no AFE
-     * in the way. A high score here with a low live score convicts the AFE
-     * processing; matching low scores convict the model or the content. */
-    int pct = 0;
-    int id = app_audio_decode_buffer(pcm, total, &pct);
-    ESP_LOGI(TAG, "voice-test: RAW decode, no AFE: id %d at %d%%", id, pct);
-
+    /* (A raw no-AFE control decode used to run here, on the console task; it
+     * settled the aliasing question and then started tripping the interrupt
+     * watchdog — MultiNet runs on the recogniser's task only.) */
+    (void)pcm;
     ESP_LOGI(TAG, "voice-test: feeding embedded sample (%u samples) instead of the mic",
              (unsigned)total);
     s_test_pos = 0;
@@ -527,7 +524,10 @@ esp_err_t app_audio_init(void)
     s_mn->print_active_speech_commands(s_mn_data);
 
     xTaskCreate(audio_feed_task, "audio_feed", 4096, NULL, 5, NULL);
-    xTaskCreate(audio_detect_task, "audio_detect", 8192, NULL, 5, NULL);
+    /* 24 KB: the detect task also rebuilds MultiNet grammars at runtime for
+     * the reinterpretation passes (heating_voice), and the 396-phrase FST
+     * build aborted the panel on the stock 8 KB stack. */
+    xTaskCreate(audio_detect_task, "audio_detect", 24576, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Voice framework initialized");
     return ESP_OK;
