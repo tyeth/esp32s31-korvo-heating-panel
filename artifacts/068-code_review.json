@@ -1,0 +1,169 @@
+{
+  "agent": "code_review",
+  "seq": 68,
+  "savedAt": "2026-11-08T01:16:34.785Z",
+  "report": {
+    "result": "pass",
+    "report": {
+      "dataModel": "No Matter/RainMaker model. MQTT: publish current_heating_setpoint to zigbee2mqtt/<TRV> (qos1, retain 0); on connect subscribe every TRV/air-sensor topic and publish an empty message to each; time 254 to zigbee2mqtt/bridge/request/permit_join; retained status topic zerocode/mac/status with last-will. HTTP /settings, /api/state, /api/set.",
+      "deviceBehavior": {
+        "bootSequence": [
+          "nvs_flash_init",
+          "esp_board_manager_init",
+          "app_driver_init",
+          "heating_init",
+          "heating_mqtt_install",
+          "app_audio_init",
+          "app_display_init + heating_ui_init",
+          "heating_web_install",
+          "app_webui_init (mdns non-fatal)",
+          "app_mqtt_init (event queue + mqtt_net task; STA when credentials exist, AP-only onboarding otherwise)",
+          "zc_behaviors_init",
+          "diagnostics_clock_init",
+          "app_logic_init",
+          "app_console_init"
+        ],
+        "cliCommands": [
+          "heating set <room 0-3> <degC>",
+          "mqtt-wifi <ssid> <password>",
+          "mqtt-broker <uri> [username] [password]",
+          "mqtt-setup"
+        ],
+        "expectedLogPatterns": [
+          "app_audio: DSP dot product: generic kernel linked (generic C (app_dsp_shim))",
+          "heating_voice: 17 of 17 English phrases registered",
+          "heating_ui: dashboard up (4 rooms)",
+          "wifi:mode : softAP then app_mqtt: SoftAP 'Korvo-Heating-XXXX' (password 'heatpanel') on a fresh panel",
+          "app_mqtt: Wi-Fi join refused: ESP_ERR_WIFI_CONN when the driver rejects a duplicate join during commissioning",
+          "app_mqtt: MQTT connecting to <uri>; Wi-Fi disconnected - retrying in 30 s",
+          "app_console: Console ready; app_main: ZeroCode AI firmware started"
+        ],
+        "findings": [
+          {
+            "area": "connectivity",
+            "description": "Fourth byte-identical crash on the commissioned-reboot path: CPU cache error at PC 0xAFD6A25E inside ieee80211_getmgtframe from ieee80211_send_probereq, same cycle count, after three different product-side Wi-Fi sequencing changes (net-task connect, APSTA removal, mode-checked join). No product frame is on that path, so it stands as an emulated Wi-Fi driver fault awaiting a hardware run.",
+            "evidence": "artifacts/065-functional_testing.json stability (mepc=0xAFD6A25E, ieee80211_getmgtframe, ieee80211_send_probereq, same cycle count as reports 053/057/061); app_mqtt.cpp net_task only receives queued events.",
+            "failureScenario": "On the emulator, a commissioned panel that reboots with stored credentials dies in the driver probe-request path about 1.7 s after reset, so the power-blip requirement cannot be exercised there; whether silicon behaves the same is unknown.",
+            "file": "firmware/components/app_mqtt/app_mqtt.cpp",
+            "line": 285,
+            "severity": "info",
+            "suggestedChange": "Close on hardware: commission against a real AP and reboot twice; if it reproduces, look at the Wi-Fi scan/init configuration rather than app_mqtt sequencing."
+          },
+          {
+            "area": "spec_alignment",
+            "description": "Standing owner-level deviations: the factory reset is a 10 s hold of the single front button rather than SET+MODE, and the voice vocabulary has no phrase for the spec example set the office to 21 (17 phrases: 20 / 21.5 / 21-and-a-half per room plus relative commands and two no-TRV phrases).",
+            "evidence": "app_logic.cpp:375-376 COMBO_ARM_MS on handles[0]; heating_voice.cpp k_variant_tenth 200, 215, 210; functional report 065 records 17 of 17 phrases and no whole-number-21 variant.",
+            "failureScenario": "A user holding the front button for 10 s wipes the panel without a confirming combination, and saying the spec example sentence ends in Sorry, not understood.",
+            "file": "firmware/components/app_logic/app_logic.cpp",
+            "line": 375,
+            "severity": "info",
+            "suggestedChange": "Owner decision: restore the SET+MODE combination and add whole-number 21 variants, or record both as accepted deviations."
+          }
+        ],
+        "filesReviewed": [
+          "artifacts/064-code_review.json",
+          "artifacts/065-functional_testing.json",
+          "artifacts/066-code_writing.json",
+          "artifacts/067-firmware_compilation.json",
+          "firmware/components/app_mqtt/app_mqtt.cpp"
+        ],
+        "gpios": [
+          {
+            "function": "WS2812 status strip",
+            "pin": "37"
+          },
+          {
+            "function": "BOOT button - click push-to-talk, long press permit-join / reopen onboarding AP",
+            "pin": "61"
+          },
+          {
+            "function": "adc_button_group handles[0]: click push-to-talk, double click dismiss, 1 s hold arms a 10 s factory reset",
+            "pin": "ADC oneshot channel"
+          },
+          {
+            "function": "I2C for GT1151 touch",
+            "pin": "0/1"
+          },
+          {
+            "function": "on-board RGB LCD 800x480",
+            "pin": "40/43/44/45"
+          },
+          {
+            "function": "ES8389 codec + I2S voice mic",
+            "pin": "3/4/5/6/7"
+          }
+        ],
+        "notes": [
+          "All three esp_timer_create_args_t initialisers in app_mqtt are now zero-initialised then assigned (lines 299-305, 316-322, 468-473); the build reports no project-code warnings.",
+          "STA_START joins only in STA/APSTA mode and logs a refusal, which now surfaces the driver's ESP_ERR_WIFI_CONN during commissioning instead of hiding it.",
+          "Commissioning moves AP-only to station in one step; the APSTA path is gone.",
+          "The commissioned-reboot fault is unchanged for the fourth build and has been handed to a hardware run.",
+          "mDNS task stack still cannot be configured (mdns Kconfig not in this build Kconfig set); mDNS is non-fatal so only the hostname is lost."
+        ],
+        "peripherals": [
+          {
+            "driver": "app_display (single setup task, lvgl_port_add_disp_rgb + add_touch)",
+            "part": "RGB LCD + LVGL"
+          },
+          {
+            "driver": "app_display indev + LVGL press/release events",
+            "part": "GT1151 touch"
+          },
+          {
+            "driver": "app_driver tone generator",
+            "part": "ES8389 codec"
+          },
+          {
+            "driver": "app_audio (AFE + MultiNet) on app_dsp_shim generic dot product",
+            "part": "esp-sr voice"
+          },
+          {
+            "driver": "app_driver status_board_strip",
+            "part": "WS2812 strip"
+          },
+          {
+            "driver": "app_mqtt (independent event queue + mqtt_net; mode-checked join; AP-only onboarding, STA restart on commissioning; CA in NVS)",
+            "part": "Wi-Fi / MQTT"
+          },
+          {
+            "driver": "app_webui (httpd always, mdns non-fatal)",
+            "part": "web UI / mDNS"
+          }
+        ],
+        "previousFindingsStatus": [
+          {
+            "evidence": "app_mqtt.cpp:299-305, 316-322, 468-473 use esp_timer_create_args_t args = {}; then assign callback/name; artifacts/067-firmware_compilation.json reports no warnings.",
+            "finding": "info - nine -Wmissing-field-initializers warnings in app_mqtt.cpp",
+            "status": "fixed and verified in source and in the build report"
+          },
+          {
+            "evidence": "artifacts/065: same PC, same cycle count, after three product-side changes.",
+            "finding": "fail - commissioned reboot aborts with a CPU cache fault inside the Wi-Fi driver",
+            "status": "unchanged; documented as an emulator/driver fault and deferred to hardware (recorded as info)"
+          },
+          {
+            "evidence": "app_mqtt.cpp:279-293 mode-checked join with logged refusal; artifacts/065 shows W app_mqtt: Wi-Fi join refused: ESP_ERR_WIFI_CONN.",
+            "finding": "info - join without mode check, result ignored",
+            "status": "fixed and observed working in the functional run"
+          },
+          {
+            "evidence": "app_mqtt.cpp:758-777 queue created independently of the task.",
+            "finding": "info - event queue created under a conditional guard",
+            "status": "fixed (verified in source)"
+          },
+          {
+            "evidence": "app_display.cpp single setup path; every functional run shows one registration.",
+            "finding": "display double bring-up / boot loop",
+            "status": "fixed and confirmed"
+          },
+          {
+            "evidence": "app_logic.cpp:375-376; heating_voice.cpp k_variant_tenth.",
+            "finding": "factory reset single-button hold and missing 21 voice phrase",
+            "status": "unchanged, owner decision"
+          }
+        ]
+      },
+      "summary": "My last two info findings are fixed and verified (all three esp_timer configs zero-initialised, build now warning-free; mode-checked join verifiably logging a refusal at commissioning), and the fourth byte-identical Wi-Fi-driver crash on the commissioned reboot remains an emulator-side fault carried as a documented hardware question."
+    }
+  }
+}
