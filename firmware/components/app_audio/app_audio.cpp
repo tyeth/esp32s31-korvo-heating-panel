@@ -6,6 +6,7 @@
 #include "heating.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -17,7 +18,9 @@
 #include <esp_mn_models.h>
 #include <esp_mn_speech_commands.h>
 #include <model_path.h>
-#include <driver/i2s_std.h>
+#include <esp_board_manager.h>
+#include <esp_codec_dev.h>
+#include "dev_audio_codec.h"
 
 static const char *TAG = "app_audio";
 
@@ -29,43 +32,180 @@ static esp_afe_sr_data_t *s_afe_data = NULL;
 static const esp_mn_iface_t *s_mn = NULL;
 static model_iface_data_t *s_mn_data = NULL;
 
-/* vmic: I2S voice capture — raw PCM source for the AFE feed task. */
+/* Voice capture: the board's OWN microphone path.
+ *
+ * The generated vmic block drove a second I2S master (port 1, std mode,
+ * 16 kHz, 32-bit) onto GPIO4/5/6 — but on 'esp32_s31_korvo_1' those pins
+ * belong to the ES8389 codec's port-0 TDM bus (GPIO4 is its LRCK, GPIO5 its
+ * DAC data, GPIO6 its ADC data). Two masters fought over the wires and the
+ * "audio" read was clock garbage: MultiNet transcribed whole sentences as
+ * nothing, and the rare 18%-confidence match was noise. The mics are read the
+ * way the DAC is written (app_driver): through the board manager's
+ * 'audio_adc' esp_codec_dev, at the codec's native 48 kHz / 16-bit / 3 TDM
+ * slots, then mic 1 is taken and averaged 3:1 down to the AFE's 16 kHz. */
 
-static i2s_chan_handle_t s_vmic_vmic_rx = NULL;
+#define MIC_NATIVE_RATE   48000   /* the codec's TDM bus rate — shared with the DAC */
+#define MIC_DECIM         (MIC_NATIVE_RATE / 16000)
 
-/* Scratch for the 32->16 bit narrowing. Sized at AFE's feed chunk, which is
- * queried at runtime; 1024 frames is comfortably above it for 16 kHz mono. */
+static esp_codec_dev_handle_t s_mic_dev = NULL;
+
+/* voice-test: a known-good spoken sample (16 kHz mono 16-bit, embedded at
+ * build time) played INTO the recogniser in place of the mic — it exercises
+ * AFE + WakeNet + MultiNet exactly as live speech does, with the microphone,
+ * the room and the speaker taken out of the question. SIZE_MAX = inactive. */
+extern const uint8_t voice_test_pcm_start[] asm("_binary_voice_test_pcm_start");
+extern const uint8_t voice_test_pcm_end[]   asm("_binary_voice_test_pcm_end");
+static volatile size_t s_test_pos = SIZE_MAX;
+
+/* ── command-window capture, for reinterpretation of the same utterance ──
+ *
+ * While the window is open, every AFE output frame (16 kHz mono, after
+ * NS/AGC) is appended here; heating_voice re-decodes it — whole or in tail
+ * snippets, against a swapped grammar — when the live match is not confident
+ * enough to act on. 11 s covers the 10 s window. */
+#define WIN_MAX_SAMPLES (16000 * 11)
+static int16_t *s_win = NULL;
+static size_t s_win_len = 0;
+
+size_t app_audio_window_audio(const int16_t **pcm)
+{
+    if (pcm) *pcm = s_win;
+    return s_win ? s_win_len : 0;
+}
+
+int app_audio_decode_buffer(const int16_t *pcm, size_t n, int *pct)
+{
+    if (pct) *pct = 0;
+    if (s_mn == NULL || s_mn_data == NULL || pcm == NULL || n == 0) return -1;
+    int chunk = s_mn->get_samp_chunksize(s_mn_data);
+    static int16_t *tmp = NULL;
+    static int tmp_chunk = 0;
+    if (tmp == NULL || tmp_chunk < chunk) {
+        if (tmp) free(tmp);
+        tmp = (int16_t *)heap_caps_malloc(chunk * sizeof(int16_t),
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        tmp_chunk = chunk;
+        if (tmp == NULL) return -1;
+    }
+    s_mn->clean(s_mn_data);
+    int found = -1;
+    for (size_t off = 0; off < n; off += (size_t)chunk) {
+        size_t m = n - off;
+        if (m > (size_t)chunk) m = (size_t)chunk;
+        memcpy(tmp, pcm + off, m * sizeof(int16_t));
+        if (m < (size_t)chunk) memset(tmp + m, 0, (chunk - m) * sizeof(int16_t));
+        esp_mn_state_t st = s_mn->detect(s_mn_data, tmp);
+        if (st == ESP_MN_STATE_DETECTED) {
+            esp_mn_results_t *mn = s_mn->get_results(s_mn_data);
+            if (mn && mn->num > 0) {
+                if (pct) *pct = (int)(mn->prob[0] * 100);
+                found = mn->phrase_id[0];
+            }
+            break;
+        }
+        if (st == ESP_MN_STATE_TIMEOUT) break;
+    }
+    s_mn->clean(s_mn_data);
+    return found;
+}
+
+void app_audio_voice_test(void)
+{
+    const int16_t *pcm = (const int16_t *)voice_test_pcm_start;
+    size_t total = (size_t)(voice_test_pcm_end - voice_test_pcm_start) / 2;
+    if (total < 16000) {
+        ESP_LOGW(TAG, "voice-test: no sample embedded — put a 16 kHz mono 16-bit PCM "
+                      "at components/app_audio/voice_test.pcm and rebuild");
+        return;
+    }
+
+    /* First, the control experiment: the recogniser on the RAW sample, no AFE
+     * in the way. A high score here with a low live score convicts the AFE
+     * processing; matching low scores convict the model or the content. */
+    int pct = 0;
+    int id = app_audio_decode_buffer(pcm, total, &pct);
+    ESP_LOGI(TAG, "voice-test: RAW decode, no AFE: id %d at %d%%", id, pct);
+
+    ESP_LOGI(TAG, "voice-test: feeding embedded sample (%u samples) instead of the mic",
+             (unsigned)total);
+    s_test_pos = 0;
+    app_audio_listen_once();      /* open the command window, as the button does */
+}
+
+/* Scratch for one AFE chunk: samples * 3 (decimation), mono. */
 #define VMIC_VMIC_MAX_CHUNK 1024
-static int32_t s_vmic_vmic_raw[VMIC_VMIC_MAX_CHUNK];
+static int16_t s_mic_raw[VMIC_VMIC_MAX_CHUNK * MIC_DECIM];
 
 /* Fixed-name contract declared in app_audio.h — see this block's block.yml.
- * Blocking read; returns the sample count actually produced. */
+ * Blocking read; returns the sample count actually produced (16 kHz mono). */
 size_t zc_audio_mic_read(int16_t *dest, size_t samples)
 {
-    if (!s_vmic_vmic_rx || dest == NULL) return 0;
+    if (dest == NULL) return 0;
+
+    /* An armed voice-test preempts the mic until the sample runs out; paced to
+     * real time so the AFE's internal buffering behaves as it does live. */
+    if (s_test_pos != SIZE_MAX) {
+        const int16_t *pcm = (const int16_t *)voice_test_pcm_start;
+        size_t total = (size_t)(voice_test_pcm_end - voice_test_pcm_start) / 2;
+        size_t n = 0;
+        size_t pos = s_test_pos;
+        while (n < samples && pos < total) dest[n++] = pcm[pos++];
+        while (n < samples) dest[n++] = 0;
+        if (pos >= total) {
+            s_test_pos = SIZE_MAX;
+            ESP_LOGI(TAG, "voice-test: sample finished — mic restored");
+        } else {
+            s_test_pos = pos;
+        }
+        vTaskDelay(pdMS_TO_TICKS(samples / 16));   /* 16 samples per ms */
+        return samples;
+    }
+
+    if (s_mic_dev == NULL) return 0;
 
     size_t done = 0;
     while (done < samples) {
         size_t want = samples - done;
         if (want > VMIC_VMIC_MAX_CHUNK) want = VMIC_VMIC_MAX_CHUNK;
 
-        size_t bytes_read = 0;
-        esp_err_t err = i2s_channel_read(s_vmic_vmic_rx, s_vmic_vmic_raw,
-                                         want * sizeof(int32_t), &bytes_read,
-                                         portMAX_DELAY);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "vmic: I2S read failed: %s", esp_err_to_name(err));
+        size_t raw_frames = want * MIC_DECIM;               /* 48 kHz frames */
+        int err = esp_codec_dev_read(s_mic_dev, s_mic_raw,
+                                     raw_frames * sizeof(int16_t));
+        if (err != ESP_CODEC_DEV_OK) {
+            ESP_LOGW(TAG, "vmic: codec read failed: %d", err);
             return done;
         }
-
-        size_t got = bytes_read / sizeof(int32_t);
-        /* 24-bit parts left-justify into the 32-bit slot: the top 16 bits are
-         * the usable signal for both 24- and 32-bit mics. */
-        for (size_t i = 0; i < got; i++) {
-            dest[done + i] = (int16_t)(s_vmic_vmic_raw[i] >> 16);
+        /* A real anti-alias low-pass ahead of the 3:1 rate drop: the first
+         * cut averaged each group of 3 (a boxcar whose stopband barely
+         * reaches -10 dB), which folded the codec's 8-24 kHz content onto the
+         * 4-8 kHz band where the number-suffix consonants live — and the
+         * recogniser kept trading "twenty four" for "twenty"/"sixteen".
+         * 33-tap Hamming-windowed sinc, 7.2 kHz cutoff at 48 kHz, unity-gain
+         * Q15; history carries the convolution across chunk boundaries. */
+        static const int16_t k_lp[33] = {
+            31, 62, 50, -39, -177, -218, 0, 421, 668, 289, -730, -1655, -1323,
+            988, 4773, 8341, 9806, 8341, 4773, 988, -1323, -1655, -730, 289,
+            668, 421, 0, -218, -177, -39, 50, 62, 31
+        };
+        static int16_t s_hist[32] = {0};
+        /* ext = the 32 carried samples + this chunk, so every tap window is
+         * fully populated. */
+        static int16_t s_ext[32 + VMIC_VMIC_MAX_CHUNK * MIC_DECIM];
+        memcpy(s_ext, s_hist, sizeof(s_hist));
+        memcpy(s_ext + 32, s_mic_raw, raw_frames * sizeof(int16_t));
+        for (size_t o = 0; o < want; o++) {
+            int32_t acc = 0;
+            const int16_t *x = s_ext + o * MIC_DECIM;
+            for (int k = 0; k < 33; k++) {
+                acc += (int32_t)k_lp[k] * x[k];
+            }
+            acc >>= 15;
+            if (acc > 32767) acc = 32767;
+            if (acc < -32768) acc = -32768;
+            dest[done + o] = (int16_t)acc;
         }
-        done += got;
-        if (got == 0) break;
+        memcpy(s_hist, s_ext + raw_frames, sizeof(s_hist));
+        done += want;
     }
     return done;
 }
@@ -123,11 +263,27 @@ static void audio_feed_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    int64_t last_meter_us = 0;
     while (1) {
         /* Provided by drivers/voice_mic_i2s (fixed-name contract, app_audio.h). */
         if (zc_audio_mic_read(buf, chunk * channels) == 0) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
+        }
+        /* Level meter, once a second: the first thing to read when nothing is
+         * ever recognised. A quiet room shows a peak of a few hundred; speech
+         * at arm's length several thousand; a flat 0 means the capture path
+         * itself is dead, whatever the recogniser says. */
+        static int16_t s_peak = 0;
+        for (int i = 0; i < chunk * channels; i++) {
+            int16_t v = buf[i] < 0 ? -buf[i] : buf[i];
+            if (v > s_peak) s_peak = v;
+        }
+        int64_t now = esp_timer_get_time();
+        if (now - last_meter_us > 1000000) {
+            last_meter_us = now;
+            ESP_LOGI(TAG, "mic level: peak %d over the last second", (int)s_peak);
+            s_peak = 0;
         }
         s_afe->feed(s_afe_data, buf);
     }
@@ -165,6 +321,7 @@ static void audio_detect_task(void *arg)
         if (s_btn_window && !listening) {
             listening = true;
             s_mn->clean(s_mn_data);
+            s_win_len = 0;       /* a fresh capture for this window */
             heating_ui_poke();   /* the request just woke the screen */
             ESP_LOGI(TAG, "button press — listening for a command");
             heating_voice_print_vocabulary();
@@ -175,6 +332,7 @@ static void audio_detect_task(void *arg)
         if (!listening && res->wakeup_state == WAKENET_DETECTED) {
             listening = true;
             s_mn->clean(s_mn_data);
+            s_win_len = 0;       /* a fresh capture for this window */
             heating_ui_poke();   /* the wake word just woke the screen */
             ESP_LOGI(TAG, "wake word detected — listening for a command");
             heating_voice_print_vocabulary();
@@ -184,14 +342,30 @@ static void audio_detect_task(void *arg)
 
         if (!listening) continue;
 
+        /* Keep the window's processed audio: a doubtful match is settled by
+         * decoding this same capture again (heating_voice reinterpretation). */
+        if (s_win != NULL && res->data != NULL && res->data_size > 0) {
+            size_t add = (size_t)res->data_size / sizeof(int16_t);
+            if (s_win_len + add > WIN_MAX_SAMPLES) add = WIN_MAX_SAMPLES - s_win_len;
+            if (add > 0) {
+                memcpy(s_win + s_win_len, res->data, add * sizeof(int16_t));
+                s_win_len += add;
+            }
+        }
+
         esp_mn_state_t st = s_mn->detect(s_mn_data, res->data);
         if (st == ESP_MN_STATE_DETECTING) continue;
 
         if (st == ESP_MN_STATE_DETECTED) {
             esp_mn_results_t *mn = s_mn->get_results(s_mn_data);
             if (mn && mn->num > 0) {
-                ESP_LOGI(TAG, "command phrase %d (%.0f%%): \"%s\"", mn->phrase_id[0],
-                         mn->prob[0] * 100, mn->string);
+                ESP_LOGI(TAG, "command phrase %d (%.0f%%): \"%s\" raw \"%s\" (input %.0f dB)",
+                         mn->phrase_id[0], mn->prob[0] * 100, mn->string, mn->raw_string,
+                         res->data_volume);
+                for (int c = 1; c < mn->num && c < 3; c++) {
+                    ESP_LOGI(TAG, "  candidate %d: phrase %d (%.0f%%)", c,
+                             mn->phrase_id[c], mn->prob[c] * 100);
+                }
                 /* The heard words go to the screen with the outcome: feedback
                  * that only reached the serial log helped nobody at the wall. */
                 heating_voice_heard(mn->string, (int)(mn->prob[0] * 100));
@@ -201,7 +375,20 @@ static void audio_detect_task(void *arg)
                 audio_apply_command(mn->phrase_id[0]);
             }
         } else if (st == ESP_MN_STATE_TIMEOUT) {
-            ESP_LOGI(TAG, "no command heard — sleeping until next trigger");
+            /* The window closed with nothing over the threshold. The model
+             * still carries what it HEARD (raw_string, no command graph) and
+             * its best near-misses: put them in the log and on the screen,
+             * so a failed command reads as "heard this" instead of silence. */
+            esp_mn_results_t *mn = s_mn->get_results(s_mn_data);
+            if (mn && (mn->raw_string[0] || mn->num > 0)) {
+                const char *heard = mn->raw_string[0] ? mn->raw_string : mn->string;
+                ESP_LOGI(TAG, "no command matched — heard \"%s\" (best candidate %d at %.0f%%)",
+                         heard, mn->num > 0 ? mn->phrase_id[0] : -1,
+                         mn->num > 0 ? mn->prob[0] * 100 : 0.0);
+                heating_voice_heard(heard, mn->num > 0 ? (int)(mn->prob[0] * 100) : 0);
+            } else {
+                ESP_LOGI(TAG, "no command heard — sleeping until next trigger");
+            }
             s_btn_window = false;
             heating_voice_not_understood();
         }
@@ -220,37 +407,39 @@ esp_err_t app_audio_init(void)
 
     s_handle = app_driver_register_solution("audio", audio_driver_cb, NULL);
 
-    /* Capture hardware first — AFE has nothing to read without it. */
+    /* Capture hardware first — AFE has nothing to read without it. The board's
+     * own 'audio_adc' (ES8389 on the port-0 TDM bus), opened the way the
+     * record_and_play example does it — open, then set_in_gain — never a
+     * second I2S master on the codec's pins (see zc_audio_mic_read above).
+     * 48 kHz matches the DAC side already running on the same bus clock. */
     {
-        /* ESP-IDF 6 deleted the i2s_port_t enum; i2s_chan_config_t.id is a plain
-           int now, so the cast is both unnecessary and a hard compile error. */
-        i2s_chan_config_t vmic_chan_cfg =
-            I2S_CHANNEL_DEFAULT_CONFIG(VMIC_VMIC_PORT, I2S_ROLE_MASTER);
-        ESP_ERROR_CHECK(i2s_new_channel(&vmic_chan_cfg, NULL, &s_vmic_vmic_rx));
-
-        i2s_std_config_t vmic_std_cfg = {
-            .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(VMIC_VMIC_SAMPLE_RATE),
-            .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-                I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
-            .gpio_cfg = {
-                .mclk = I2S_GPIO_UNUSED,
-                .bclk = (gpio_num_t)VMIC_VMIC_BCLK_GPIO,
-                .ws   = (gpio_num_t)VMIC_VMIC_WS_GPIO,
-                .dout = I2S_GPIO_UNUSED,
-                .din  = (gpio_num_t)VMIC_VMIC_DIN_GPIO,
-                .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
-            },
-        };
-        vmic_std_cfg.slot_cfg.slot_mask =
-            VMIC_VMIC_SLOT_RIGHT ? I2S_STD_SLOT_RIGHT : I2S_STD_SLOT_LEFT;
-
-        ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_vmic_vmic_rx, &vmic_std_cfg));
-        ESP_ERROR_CHECK(i2s_channel_enable(s_vmic_vmic_rx));
-
-        ESP_LOGI(TAG, "Voice mic vmic: I2S%d BCLK=%d WS=%d DIN=%d @%d Hz, %s slot",
-                 VMIC_VMIC_PORT, VMIC_VMIC_BCLK_GPIO, VMIC_VMIC_WS_GPIO,
-                 VMIC_VMIC_DIN_GPIO, VMIC_VMIC_SAMPLE_RATE,
-                 VMIC_VMIC_SLOT_RIGHT ? "right" : "left");
+        void *adc_h = NULL;
+        dev_audio_codec_handles_t *codec = NULL;
+        if (esp_board_manager_get_device_handle("audio_adc", &adc_h) == ESP_OK && adc_h != NULL) {
+            codec = (dev_audio_codec_handles_t *)adc_h;
+        }
+        if (codec == NULL || codec->codec_dev == NULL) {
+            ESP_LOGE(TAG, "board device 'audio_adc' has no handle — voice disabled");
+            return ESP_ERR_NOT_FOUND;
+        }
+        esp_codec_dev_sample_info_t fs = {};
+        fs.sample_rate = MIC_NATIVE_RATE;
+        fs.channel = 1;
+        fs.bits_per_sample = 16;
+        if (esp_codec_dev_open(codec->codec_dev, &fs) != ESP_CODEC_DEV_OK) {
+            ESP_LOGE(TAG, "mic codec 'audio_adc' would not open @%d Hz — voice disabled",
+                     MIC_NATIVE_RATE);
+            return ESP_FAIL;
+        }
+        /* 30 dB: the record example's recording gain; without it the ADC sits
+         * at 0 dB and a command from across the room reaches the recogniser
+         * as a whisper. The AFE's AGC rides on top. */
+        if (esp_codec_dev_set_in_gain(codec->codec_dev, 30.0f) != ESP_CODEC_DEV_OK) {
+            ESP_LOGW(TAG, "mic in-gain not set — recognition range will suffer");
+        }
+        s_mic_dev = codec->codec_dev;
+        ESP_LOGI(TAG, "Voice mic: board 'audio_adc' @%d Hz mono 16-bit, 30 dB in-gain, "
+                      "decimated %d:1 for the AFE", MIC_NATIVE_RATE, MIC_DECIM);
     }
 
     /* Models live in the `model` partition; see the 8mb-voice table. A build
@@ -273,11 +462,22 @@ esp_err_t app_audio_init(void)
 
     /* "M" = one mic channel, no reference channel (no AEC — nothing plays back
      * into this mic in the reference products). */
-    afe_config_t *afe_cfg = afe_config_init("M", s_models, AFE_TYPE_SR, AFE_MODE_LOW_COST);
+    /* HIGH_PERF: better noise/echo cleanup ahead of the recogniser. The
+     * low-cost mode left real commands under the detection threshold at
+     * living-room distance; this panel has PSRAM to spare for it. */
+    afe_config_t *afe_cfg = afe_config_init("M", s_models, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     if (!afe_cfg) {
         ESP_LOGE(TAG, "afe_config_init failed");
         return ESP_ERR_NO_MEM;
     }
+    /* Noise suppression and automatic gain ahead of the recogniser: with one
+     * economy mic, level and noise are exactly what it is short of. WEBRTC
+     * AGC, deliberately: the WAKENET mode only computes a gain when the wake
+     * word fires, so every button-opened window (the panel's push-to-talk,
+     * and voice-test) ran with NO gain control at all. */
+    afe_cfg->ns_init = true;
+    afe_cfg->agc_init = true;
+    afe_cfg->agc_mode = AFE_AGC_MODE_WEBRTC;
     s_afe = esp_afe_handle_from_config(afe_cfg);
     s_afe_data = s_afe->create_from_config(afe_cfg);
     afe_config_free(afe_cfg);
@@ -298,10 +498,32 @@ esp_err_t app_audio_init(void)
 
     /* Phrases are registered at runtime, not from sdkconfig: the vocabulary is
      * the product's (heating_voice_register, in app_logic). */
+    /* The reinterpretation capture — in PSRAM, one window's worth. */
+    s_win = (int16_t *)heap_caps_malloc(WIN_MAX_SAMPLES * sizeof(int16_t),
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_win == NULL) {
+        ESP_LOGW(TAG, "no PSRAM for the window capture — doubtful commands will "
+                      "be rejected instead of re-decoded");
+    }
+
     esp_mn_commands_clear();
     audio_register_commands();
 
     esp_mn_commands_update();
+    /* The default accept threshold let an 18%-confidence guess fire a command
+     * ("set bathroom to 24" acted as "stop"). 0.45 keeps junk out; a genuine
+     * phrase that lands under it now shows up as 'Heard: "…"' on the timeout
+     * path, which is the evidence to tune this further either way. */
+    if (s_mn->set_det_threshold) {
+        /* Calibrated on this board with an embedded known-good sample: mn7_en
+         * scores a CORRECT long phrase at only 11-16%, so anything like the
+         * conventional 0.5 silences the panel completely. The model gate stays
+         * low; the real acceptance test is per phrase CLASS in
+         * heating_voice_apply_command (short phrases score high on noise, long
+         * ones score low even when right — one number cannot split them). */
+        s_mn->set_det_threshold(s_mn_data, 0.05f);
+        ESP_LOGI(TAG, "command accept threshold set to 0.05 (class gate in the product)");
+    }
     s_mn->print_active_speech_commands(s_mn_data);
 
     xTaskCreate(audio_feed_task, "audio_feed", 4096, NULL, 5, NULL);

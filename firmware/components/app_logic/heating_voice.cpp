@@ -38,7 +38,10 @@
 
 #include "heating.h"
 #include "app_logic.h"
+#include "app_audio.h"
 #include "app_config.h"
+
+#include <esp_heap_caps.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -216,16 +219,25 @@ static void build_table(void)
     for (int i = 0; i < VOICE_NO_TRV_COUNT; i++) table_push(ACT_NO_TRV, i, -1, 0);
 }
 
-/**
- * Called from app_audio_init() between its esp_mn_commands_clear() and
- * esp_mn_commands_update(): everything added here becomes the recognised
- * vocabulary. A no-op after the first call, so a failed voice start cannot
- * leave the list half-built.
- */
-esp_err_t heating_voice_register(void)
+/* ── the two grammars ─────────────────────────────────────────────────
+ *
+ * Full sentences carry too many near-neighbours for mn7_en to separate
+ * reliably ("twenty two" lost to "sixteen" inside a 396-phrase grammar), so a
+ * low-confidence match is never applied: the panel keeps the part the
+ * candidates agree on (the room), swaps MultiNet to a NUMBERS-ONLY grammar —
+ * 48 phrases instead of 396, where values are acoustically unambiguous — and
+ * asks for just the temperature. The swap runs on the recogniser's own task
+ * (no concurrent detect), and the full grammar is restored after the answer,
+ * a cancel, or a timeout. */
+
+#define NUM_ID_BASE    3000
+#define NUM_ID_CANCEL  3999
+static bool s_num_grammar = false;        /* which grammar MultiNet holds now */
+static int16_t s_num_tenth[64];
+static int s_num_n = 0;
+
+static int add_full_grammar(void)
 {
-    if (s_registered) return ESP_OK;
-    build_table();
     int added = 0;
     char phrase[VOICE_PHRASE_MAX];
     for (int i = 0; i < s_table_n; i++) {
@@ -236,6 +248,57 @@ esp_err_t heating_voice_register(void)
             ESP_LOGW(TAG, "phrase '%s' rejected by MultiNet", phrase);
         }
     }
+    return added;
+}
+
+static int add_number_grammar(void)
+{
+    int added = 0;
+    char phrase[VOICE_PHRASE_MAX];
+    s_num_n = 0;
+    for (int d = FULL_MIN; d <= FULL_MAX && s_num_n < 63; d++) {
+        snprintf(phrase, sizeof(phrase), "%d", d);
+        s_num_tenth[s_num_n] = (int16_t)(d * 10);
+        if (esp_mn_commands_add(NUM_ID_BASE + s_num_n, phrase) == ESP_OK) added++;
+        s_num_n++;
+    }
+    for (int d = HALF_MIN; d <= HALF_MAX && s_num_n < 63; d++) {
+        snprintf(phrase, sizeof(phrase), "%d and a half", d);
+        s_num_tenth[s_num_n] = (int16_t)(d * 10 + 5);
+        if (esp_mn_commands_add(NUM_ID_BASE + s_num_n, phrase) == ESP_OK) added++;
+        s_num_n++;
+        snprintf(phrase, sizeof(phrase), "%d point five", d);
+        s_num_tenth[s_num_n] = (int16_t)(d * 10 + 5);
+        if (esp_mn_commands_add(NUM_ID_BASE + s_num_n, phrase) == ESP_OK) added++;
+        s_num_n++;
+    }
+    if (esp_mn_commands_add(NUM_ID_CANCEL, "cancel") == ESP_OK) added++;
+    return added;
+}
+
+/* Swap what MultiNet recognises. Runs only on the recogniser's task (the
+ * command/timeout handlers) or at init, so detect never races the rebuild. */
+static void set_grammar(bool numbers)
+{
+    if (s_num_grammar == numbers && s_registered) return;
+    esp_mn_commands_clear();
+    int added = numbers ? add_number_grammar() : add_full_grammar();
+    esp_mn_commands_update();
+    s_num_grammar = numbers;
+    ESP_LOGI(TAG, "grammar: %s (%d phrases)", numbers ? "numbers only" : "full", added);
+}
+
+/**
+ * Called from app_audio_init() between its esp_mn_commands_clear() and
+ * esp_mn_commands_update(): everything added here becomes the recognised
+ * vocabulary. A no-op after the first call, so a failed voice start cannot
+ * leave the list half-built.
+ */
+esp_err_t heating_voice_register(void)
+{
+    if (s_registered) return ESP_OK;
+    build_table();
+    int added = add_full_grammar();
     s_registered = true;
     ESP_LOGI(TAG, "%d of %d English phrases registered", added, s_table_n);
     return ESP_OK;
@@ -312,70 +375,212 @@ static void apply(int idx, int16_t tenth)
     report_result(request_one(idx, tenth), room->cfg.name, tenth);
 }
 
+static bool phrase_is_set(const voice_phrase_t *p)
+{
+    switch (p->act) {
+        case ACT_SET: case ACT_SET_NOTHE: case ACT_SET_HALF: case ACT_SET_P5:
+        case ACT_SET_BARE: case ACT_SET_BARE_HALF: case ACT_SET_BARE_P5:
+        case ACT_SET_ALL: case ACT_SET_PAIR:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* One setpoint to the rooms a SET phrase names — the value may come from the
+ * phrase itself or from the number re-decode of the same audio. */
+static void apply_scope(const voice_phrase_t *p, int16_t tenth)
+{
+    if (p->act == ACT_SET_ALL) {
+        heating_req_result_t worst = HEATING_REQ_ALREADY_SET;
+        for (int r = 0; r < HEATING_ROOMS; r++) {
+            heating_req_result_t res = request_one(r, tenth);
+            if (res == HEATING_REQ_OK) worst = HEATING_REQ_OK;
+            else if (res == HEATING_REQ_OFFLINE && worst != HEATING_REQ_OK) worst = res;
+        }
+        report_result(worst, "All rooms", tenth);
+        return;
+    }
+    if (p->act == ACT_SET_PAIR) {
+        heating_req_result_t ra = request_one(p->room_a, tenth);
+        heating_req_result_t rb = request_one(p->room_b, tenth);
+        heating_req_result_t res =
+            (ra == HEATING_REQ_OK || rb == HEATING_REQ_OK) ? HEATING_REQ_OK :
+            (ra == HEATING_REQ_OFFLINE ? ra : rb);
+        char what[48];
+        snprintf(what, sizeof(what), "%s & %s", room_name(p->room_a), room_name(p->room_b));
+        heating_ui_select(p->room_a);
+        report_result(res, what, tenth);
+        return;
+    }
+    apply(p->room_a, tenth);
+}
+
+static void too_uncertain(void)
+{
+    if (s_heard[0]) {
+        char msg[150];
+        snprintf(msg, sizeof(msg), "Heard: \"%s\" (%d%%)\ntoo uncertain - nothing changed",
+                 s_heard, s_heard_pct);
+        s_heard[0] = '\0';
+        heating_ui_banner(msg);
+    } else {
+        heating_ui_banner("Sorry, not understood");
+    }
+}
+
+/* ── reinterpreting the SAME utterance ─────────────────────────────────
+ *
+ * Never applied below the confident bar, and never re-asked either: the
+ * window's audio is kept (app_audio records the AFE output), and a doubtful
+ * match is settled by decoding that SAME capture again — first the whole
+ * utterance gain-normalised against the full grammar, then its tail snippets
+ * against a 48-phrase numbers-only grammar, where "twenty two" cannot lose to
+ * "sixteen". The sentence pass names the rooms; the number pass names the
+ * value; both have to clear their gates or nothing is changed.
+ *
+ * Gates, measured on this board: a correct full sentence scores 11-16%, so
+ * 25% is "already sure", 8% is the floor worth re-examining; the small
+ * number grammar is expected to score far higher, so it must clear 15%. */
+#define VOICE_SURE_PCT       25
+#define VOICE_FLOOR_PCT      8
+#define VOICE_NUM_SURE_PCT   15
+
+static void normalize_pcm(int16_t *pcm, size_t n)
+{
+    int peak = 0;
+    for (size_t i = 0; i < n; i++) {
+        int v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+        if (v > peak) peak = v;
+    }
+    if (peak < 500 || peak >= 20000) return;      /* silence, or already loud */
+    int num = 20000, den = peak;
+    for (size_t i = 0; i < n; i++) {
+        pcm[i] = (int16_t)((int32_t)pcm[i] * num / den);
+    }
+}
+
+static void reinterpret_window(const voice_phrase_t *live_p, int live_pct)
+{
+    const int16_t *pcm = NULL;
+    size_t n = app_audio_window_audio(&pcm);
+    if (pcm == NULL || n < 8000) {                /* under half a second */
+        too_uncertain();
+        return;
+    }
+
+    /* A normalised working copy with half a second of silence at the end, so
+     * every pass sees a closed utterance. */
+    size_t tail_zeros = 8000;
+    int16_t *work = (int16_t *)heap_caps_malloc((n + tail_zeros) * sizeof(int16_t),
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (work == NULL) {
+        too_uncertain();
+        return;
+    }
+    memcpy(work, pcm, n * sizeof(int16_t));
+    memset(work + n, 0, tail_zeros * sizeof(int16_t));
+    normalize_pcm(work, n);
+
+    /* Pass A: the whole normalised utterance, full grammar — an independent
+     * second reading of the same words. */
+    int pct_a = 0;
+    int id_a = app_audio_decode_buffer(work, n + tail_zeros, &pct_a);
+    int ia = id_a - VOICE_ID_SET_BASE;
+    const voice_phrase_t *p_a =
+        (ia >= 0 && ia < s_table_n && phrase_is_set(&s_table[ia])) ? &s_table[ia] : NULL;
+    ESP_LOGI(TAG, "reinterpret: live %d%%, normalised pass id %d at %d%%",
+             live_pct, id_a, pct_a);
+
+    /* No tail/number passes: they were tried and retired. They decode the
+     * same marginal audio the sentence passes saw (so they confirm nothing —
+     * a wrong value once carried a live and a tail pass at once), and the
+     * runtime grammar swap they needed rebuilt a 396-phrase FST on the
+     * recogniser's task, which aborted the whole panel. Two independent
+     * readings of the full sentence are the evidence; agreement is the test. */
+    free(work);
+
+    /* The decision: the two SENTENCE readings must independently agree on the
+     * action, the rooms and the value. Anything less is shown, not applied —
+     * a wrong setpoint is worse than none. A timeout entry (no live match)
+     * accepts the normalised pass alone only when it is outright sure. */
+    if (live_p != NULL && p_a != NULL &&
+        live_p->act == p_a->act && live_p->room_a == p_a->room_a &&
+        live_p->room_b == p_a->room_b && live_p->tenth == p_a->tenth &&
+        (live_pct >= VOICE_FLOOR_PCT || pct_a >= VOICE_FLOOR_PCT)) {
+        ESP_LOGI(TAG, "reinterpret: both readings agree — applying %d.%d",
+                 live_p->tenth / 10, (live_p->tenth % 10 + 10) % 10);
+        apply_scope(live_p, live_p->tenth);
+        return;
+    }
+    if (live_p == NULL && p_a != NULL && pct_a >= VOICE_SURE_PCT) {
+        apply_scope(p_a, p_a->tenth);
+        return;
+    }
+    too_uncertain();
+}
+
 /* Called by the audio framework for one recognised phrase id. */
 void heating_voice_apply_command(int phrase_id)
 {
     if (!s_registered) return;                 /* a different audio build */
     heating_ui_listening(false);               /* the window closes on a match */
 
+    int pct = s_heard_pct;
+
+    /* A number-grammar id arriving HERE means a live detection fired while
+     * the reinterpretation grammar was in place (it never should: the window
+     * is closed during reinterpretation) — restore and drop it. */
+    if (phrase_id >= NUM_ID_BASE) {
+        set_grammar(false);
+        return;
+    }
+
     int i = phrase_id - VOICE_ID_SET_BASE;
     if (i < 0 || i >= s_table_n) return;
     const voice_phrase_t *p = &s_table[i];
 
-    switch (p->act) {
-        case ACT_SET:
-        case ACT_SET_NOTHE:
-        case ACT_SET_HALF:
-        case ACT_SET_P5:
-        case ACT_SET_BARE:
-        case ACT_SET_BARE_HALF:
-        case ACT_SET_BARE_P5:
-            apply(p->room_a, p->tenth);
-            break;
-        case ACT_SET_ALL: {
-            heating_req_result_t worst = HEATING_REQ_ALREADY_SET;
-            for (int r = 0; r < HEATING_ROOMS; r++) {
-                heating_req_result_t res = request_one(r, p->tenth);
-                if (res == HEATING_REQ_OK) worst = HEATING_REQ_OK;
-                else if (res == HEATING_REQ_OFFLINE && worst != HEATING_REQ_OK) worst = res;
+    /* Short phrases are noise magnets (broken audio once matched "stop" at
+     * 18% while a CORRECT full sentence scores 11-16%), so they take a high
+     * bar and are never reinterpreted. */
+    if (!phrase_is_set(p)) {
+        if (pct > 0 && pct < 30) {
+            too_uncertain();
+            return;
+        }
+        switch (p->act) {
+            case ACT_WARM:
+            case ACT_COOL: {
+                int idx = (p->room_a >= 0) ? p->room_a : s_sel_room;
+                heating_room_t *room = heating_room(idx);
+                if (room == NULL) return;
+                int16_t step = (p->act == ACT_WARM) ? 10 : -10;
+                apply(idx, (int16_t)(heating_room_target_ui(room) + step));
+                break;
             }
-            report_result(worst, "All rooms", p->tenth);
-            break;
+            case ACT_CANCEL:
+            case ACT_STOP:
+                banner_outcome("Cancelled");
+                break;
+            case ACT_NO_TRV: {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "%s has no smart TRV", k_unheated[p->room_a]);
+                banner_outcome(msg);
+                break;
+            }
+            default:
+                break;
         }
-        case ACT_SET_PAIR: {
-            heating_req_result_t ra = request_one(p->room_a, p->tenth);
-            heating_req_result_t rb = request_one(p->room_b, p->tenth);
-            heating_req_result_t res =
-                (ra == HEATING_REQ_OK || rb == HEATING_REQ_OK) ? HEATING_REQ_OK :
-                (ra == HEATING_REQ_OFFLINE ? ra : rb);
-            char what[48];
-            snprintf(what, sizeof(what), "%s & %s", room_name(p->room_a), room_name(p->room_b));
-            heating_ui_select(p->room_a);
-            report_result(res, what, p->tenth);
-            break;
-        }
-        case ACT_WARM:
-        case ACT_COOL: {
-            int idx = (p->room_a >= 0) ? p->room_a : s_sel_room;
-            heating_room_t *room = heating_room(idx);
-            if (room == NULL) return;
-            int16_t step = (p->act == ACT_WARM) ? 10 : -10;
-            apply(idx, (int16_t)(heating_room_target_ui(room) + step));
-            break;
-        }
-        case ACT_CANCEL:
-        case ACT_STOP:
-            banner_outcome("Cancelled");
-            break;
-        case ACT_NO_TRV: {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "%s has no smart TRV", k_unheated[p->room_a]);
-            banner_outcome(msg);
-            break;
-        }
-        default:
-            break;
+        return;
     }
+
+    /* A SET family phrase: sure applies as heard, anything less is settled by
+     * re-decoding the same capture — never applied as-is, never re-asked. */
+    if (pct >= VOICE_SURE_PCT) {
+        apply_scope(p, p->tenth);
+        return;
+    }
+    reinterpret_window(p, pct);
 }
 
 /* ── the audio framework's other hooks ───────────────────────────────── */
@@ -407,6 +612,13 @@ void heating_voice_on_event(int listening)
 void heating_voice_not_understood(void)
 {
     heating_ui_listening(false);
-    s_heard[0] = '\0';
-    heating_ui_banner("Sorry, not understood\ntry: set the office to 21");
+    if (!s_registered) return;
+    if (s_num_grammar) {
+        /* Should not happen (the window is closed while reinterpreting), but
+         * never leave the panel listening for bare numbers. */
+        set_grammar(false);
+    }
+    /* The live decoder gave up; the capture may still hold a command — decode
+     * the same audio again before giving up (banners come from there). */
+    reinterpret_window(NULL, 0);
 }

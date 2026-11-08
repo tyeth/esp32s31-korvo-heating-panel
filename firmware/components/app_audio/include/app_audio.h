@@ -22,6 +22,20 @@
  *  as it does after the wake word. */
 void app_audio_listen_once(void);
 
+/** Feed the embedded test sample (components/app_audio/voice_test.pcm) into
+ *  the recogniser in place of the mic, once, with the command window open:
+ *  model + grammar exercised with known audio. Console command `voice-test`. */
+void app_audio_voice_test(void);
+
+/** The last command window's processed audio (16 kHz mono, AFE output),
+ *  recorded for reinterpretation; valid until the next window opens. */
+size_t app_audio_window_audio(const int16_t **pcm);
+
+/** Decode a prerecorded buffer against the CURRENTLY registered command
+ *  grammar: top phrase id (its confidence, 0..100, in *pct) or -1. Runs on
+ *  the recogniser's task only — never while the live window is open. */
+int app_audio_decode_buffer(const int16_t *pcm, size_t n, int *pct);
+
 /** Close that window now (a second press, or the 10 s timer). */
 void app_audio_listen_stop(void);
 

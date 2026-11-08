@@ -1,4 +1,5 @@
 #include "app_logic.h"
+#include "app_audio.h"
 #include "app_console.h"
 #include "app_driver.h"
 #include "app_config.h"
@@ -302,6 +303,24 @@ static void zc_con_heap_init(void)
     esp_console_cmd_register(&con_heap_c);
 }
 
+static int con_voice_test_cmd(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    app_audio_voice_test();
+    printf("voice-test: embedded sample feeding the recogniser — watch for "
+           "'command phrase' or 'no command matched' in the log\n");
+    return 0;
+}
+
+static void zc_con_voice_test_init(void)
+{
+    esp_console_cmd_t c = {};
+    c.command = "voice-test";
+    c.help = "Feed the embedded spoken sample to the recogniser instead of the mic";
+    c.func = &con_voice_test_cmd;
+    esp_console_cmd_register(&c);
+}
+
 void console_logic_init(void)
 {
     zc_con_uptime_init();
@@ -309,4 +328,5 @@ void console_logic_init(void)
     zc_con_ver_init();
     zc_con_log_init();
     zc_con_heap_init();
+    zc_con_voice_test_init();
 }

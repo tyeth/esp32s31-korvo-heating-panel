@@ -14,3 +14,6 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/.clangd
 esp-idf
+
+# The embedded voice-test sample is the developer's own recording: local only.
+firmware/components/app_audio/voice_test.pcm
