@@ -1,0 +1,102 @@
+{
+  "agent": "functional_testing",
+  "seq": 77,
+  "savedAt": "2026-11-08T01:42:14.596Z",
+  "report": {
+    "result": "pass",
+    "summary": "The previously failing configured-reboot scenario now passes (commissioning + reboot boots to the console and stays up 61 s with no crash), the spec's 'set the office to 21' phrase is in the 21-phrase vocabulary, and nothing regressed — though the pass rests on one run and a shared-timer defect in the new offline policy is flagged for the next fix.",
+    "report": {
+      "deviceInfo": {
+        "appVersion": "zerocode_ai_firmware 1.0.0, ESP-IDF e9da155a, ELF SHA256 edf9c3cec",
+        "bootTime": "fresh boot reaches the console ~2.1 s after reset; configured reboot reaches the console ~2.6 s after reset",
+        "chip": "ESP32-S31 rev v0.0, 2 cores, 16 MB flash, 16 MB PSRAM",
+        "connectivity": "AP-only onboarding on a fresh panel; commissioning switches the radio to station (wifi:mode : sta); no broker peer in the emulator, every dial fails 'Host is unreachable'",
+        "crashes": "none this session — both boots (fresh and configured reboot) reached the console and stayed up"
+      },
+      "hardwareVerificationDeferred": true,
+      "notes": [
+        "The previously failing configured-reboot scenario passed this round: after mqtt-wifi + mqtt-broker and a console 'reboot', the panel came up station-only, bound its buttons, logged 'heating panel logic up', reached 'Console ready' / 'ZeroCode AI firmware started', and was still answering 'uptime' at 61 s. No cache error, no stack overflow, no reset. Its 0xAFD6A25E / 0x2FAFAAD4 faults did not recur.",
+        "Caveat on that pass: the crashes moved between driver frames across rounds (ieee80211_getmgtframe, then ppProcessTxQ/ppGetTxframe) with an identical signature and no product change this round targeted them, so 'gone' here means not reproduced on this run rather than proven fixed; it still needs a hardware confirmation against a real AP.",
+        "Spec item now satisfied on the console: the voice vocabulary is 21 phrases and the runtime list includes the whole-number variant ('... To TWfNTm' as well as '... PuNT FiV' and '... cND c haF') for all four rooms — the spec's 'set the office to 21' now has a phrase. Actual recognition still needs a microphone (unverified).",
+        "New product-side risk flagged by the review and worth watching before it bites: the broker retry and the Wi-Fi retry share one esp_timer handle (s_retry_timer), so whichever path creates it fixes the callback for both — a Wi-Fi drop after a broker give-up (or the reverse) can leave the other path calling the wrong callback. It did not surface in this run (no session was ever established, so the give-up path never ran), but it is a real defect in the new offline policy.",
+        "Non-fatal lines, not counted on their own: sdmmc_init_ocr 0x107 (no SD card), sccb_i2c transmit error then a correct ov3660 detection, 'i2s_common: GPIO 4/5 is not usable', 'gpio: conflict found for GPIO[7]', phy RF-calibration fallback, 'Wi-Fi join refused: ESP_ERR_WIFI_SSID' during commissioning (join attempted before the SSID was applied; the panel then logged 'wifi config saved — connecting' and proceeded), and the usual Wi-Fi rate/power dump."
+      ],
+      "suggestedFix": "Two follow-ups, neither blocking this report: (1) the shared esp_timer handle between the broker retry and the Wi-Fi retry must be split into two handles (or one callback branching on a mode flag) — otherwise a Wi-Fi drop after a broker give-up leaves the panel calling the wrong retry; (2) confirm the configured-reboot boot on real hardware against a real AP, since the crash class never had a product-side fix and has only been absent for one emulator run. The SET+MODE factory reset remains a documented deviation.",
+      "tests": [
+        {
+          "category": "display",
+          "details": "Both boots registered the panel once: the duplicate init is refused with a warning, the RGB panel and GT1151 touch are registered, 'Display initialized' follows; no LVGL teardown, no assert.",
+          "evidence": "W app_display: app_display_init() called twice — ignored (use app_display_ready()) / I app_display: Panel 'display_lcd' from board 'esp32_s31_korvo_1': generic_rgb rgb 800x480 / I app_display: Display initialized",
+          "name": "Display single bring-up / no assert",
+          "result": "pass"
+        },
+        {
+          "category": "boot",
+          "details": "Fresh (factory) panel: full sequence to 'Console ready' and 'ZeroCode AI firmware started'; dashboard up (4 rooms), settings page and web UI up, MQTT init with the AP-only onboarding access point; stays up and answers commands.",
+          "evidence": "I (1184) heating_ui: dashboard up (4 rooms) / I (1264) wifi:mode : softAP (24:0a:c4:00:00:02) / I (2124) app_main: ZeroCode AI firmware started",
+          "name": "Fresh-panel boot to dashboard, web UI, MQTT init and console",
+          "result": "pass"
+        },
+        {
+          "category": "stability",
+          "details": "The scenario that failed in six previous rounds passed: after commissioning and a console 'reboot', the configured boot completed every milestone (MQTT initialized, buttons bound, panel logic up, console ready, firmware started), answered 'heating' and 'uptime', and was still alive at 61 s with no cache error, stack overflow or reset. The crash class moved between driver frames in earlier rounds with no code on that path and was not touched this round, so treat this as 'not reproduced' rather than 'proven fixed' until hardware confirms it.",
+          "evidence": "I (1685) wifi:mode : sta (24:0a:c4:00:00:01) / I (1685) app_mqtt: MQTT initialized (node 240ac4000001) / I (1695) heating_panel: heating panel logic up / I (2565) app_console: Console ready. Type 'help' for commands. / I (2565) app_main: ZeroCode AI firmware started / uptime: 0d 00h 01m 01s (61 s) / no 'Cache error', no 'stack overflow' in artifacts/device.log",
+          "name": "Boot after a reboot of a commissioned panel — no crash / reset (previously failing, 7 rounds)",
+          "result": "pass"
+        },
+        {
+          "category": "console",
+          "details": "help / uptime / heating / mqtt-wifi / mqtt-broker answer on both boots. 'heating' lists the four spec rooms with their four zigbee2mqtt TRV state topics, the 5..30 °C range and the new state line; before commissioning it read 'Wi-Fi not configured, broker session down, 0/4 rooms reporting', after commissioning 'Wi-Fi configured, broker session down, 0/4 rooms reporting' — the line reflects the real state in both cases.",
+          "evidence": "panel: Wi-Fi not configured, broker session down, 0/4 rooms reporting (600s staleness) → panel: Wi-Fi configured, broker session down, 0/4 rooms reporting (600s staleness) / panel is offline (nothing is published)",
+          "name": "Console surface, room table and state line (f8, f4, f16, f12)",
+          "result": "pass"
+        },
+        {
+          "category": "voice",
+          "details": "The runtime vocabulary is now 21 English phrases and includes the whole-number variant for every room, so the spec's own example 'set the office to 21' has a phrase ('SfT jc eFcS To TWfNTm'). Recognition itself needs a microphone, which this device does not provide — the check here is that the phrase set exists and registered, not that it is understood.",
+          "evidence": "I (1014) heating_voice: 21 of 21 English phrases registered / Command 1600: SfT jc BavRoM To TWfNTm … Command 1608: SfT jc eFcS To TWfNTm … Command 1620: KaNScL",
+          "name": "Spec example phrase 'set the office to 21' present in the vocabulary (f9)",
+          "result": "pass"
+        },
+        {
+          "category": "connectivity",
+          "details": "No broker peer exists on the emulator (dial fails 'Host is unreachable'), so no session was ever established; the publish, subscribe, per-message logging, the 300 s give-up and its 30 s retry could not be observed.",
+          "evidence": "I app_mqtt: MQTT connecting to mqtt://192.168.4.2:1883 / E esp-tls: [sock=57] connect() error: Host is unreachable / W app_mqtt: MQTT disconnected — esp-mqtt reconnects on its own",
+          "name": "MQTT setpoint publish, TRV state ingest, offline give-up/retry (f4, f15, f16, f10, f12)",
+          "result": "unverified"
+        },
+        {
+          "category": "connectivity",
+          "details": "Needs broker payloads and the screen; no peer exists here.",
+          "name": "Air-sensor override, heating/off derivation, staleness greying (f7, f18, f2)",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "'dashboard up (4 rooms)' is logged, but painting, brightness dimming and tap handling can only be seen on the real panel.",
+          "name": "Dashboard rendering, touch selection, +/- 0.5 °C, banners, dimming (f2, f3, f19, f13)",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "Strip is bound and app_logic sets it (OFF → ON across the Wi-Fi transition on the configured boot); colour remains a physical observation.",
+          "evidence": "I (1695) app_driver: Set status ('led_strip'): ON",
+          "name": "Status LED colours (f6, f12)",
+          "result": "unverified"
+        },
+        {
+          "category": "commissioning",
+          "details": "The AP comes up (AP-only mode) with its settings URL; joining it from a real client — and the consumer-reported settings-page crash fix — is a user/hardware step.",
+          "name": "Onboarding through the SoftAP from a phone, settings page saves (f5)",
+          "result": "unverified"
+        },
+        {
+          "category": "hardware",
+          "details": "Not exercised this round; a 10 s physical hold cannot be done here.",
+          "name": "Factory reset (10 s button hold)",
+          "result": "unverified"
+        }
+      ]
+    }
+  }
+}
