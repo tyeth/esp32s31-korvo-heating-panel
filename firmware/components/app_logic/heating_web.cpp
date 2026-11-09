@@ -312,6 +312,8 @@ static void render_page(bool was_saved)
                          ";border-radius:6px\">"
                          "<option value=\"\">Custom (edit below)</option>"
                          "<option value=\"https://integrate.api.nvidia.com/v1/chat/completions"
+                         "|nvidia/nemotron-3.5-lightning-30b-a3b\">NVIDIA (Nemotron 3.5 Lightning)</option>"
+                         "<option value=\"https://integrate.api.nvidia.com/v1/chat/completions"
                          "|z-ai/glm-5.3-flash\">NVIDIA (GLM 5.3 Flash)</option>"
                          "<option value=\"https://api.anthropic.com/v1/chat/completions"
                          "|claude-haiku-5-5\">Anthropic (Claude Haiku 5.5)</option>"

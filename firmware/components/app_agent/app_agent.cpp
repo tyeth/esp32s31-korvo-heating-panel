@@ -35,7 +35,9 @@ static const char *TAG = "app_agent";
 #define AGENT_NVS_NS       "agent"
 #define AGENT_DEF_STT_URL  "https://api.openai.com/v1/audio/transcriptions"
 #define AGENT_DEF_LLM_URL  "https://integrate.api.nvidia.com/v1/chat/completions"
-#define AGENT_DEF_MODEL    "zai/glm-5.3-flash"
+/* Nemotron: the one NVIDIA-hosted model whose queue actually answers (GLM
+ * accepts the request and never replies). */
+#define AGENT_DEF_MODEL    "nvidia/nemotron-3.5-lightning-30b-a3b"
 #define AGENT_MAX_TURNS    5
 /* Generous on purpose: software RSA chain verification on this preview core
  * (hardware MPI hangs, so it is disabled) takes tens of seconds; the one
@@ -336,6 +338,16 @@ static esp_err_t agent_run(const char *user_text)
         /* No sampling knobs: Anthropic's compat endpoint refuses `temperature`
          * on current models, and the default is fine for tool calling. */
         cJSON_AddNumberToObject(req, "max_tokens", 700);
+        /* Nemotron thinks out loud unless told not to; the reasoning lands in
+         * its own field (so parsing survives either way) but costs seconds of
+         * tokens per turn on a heating command. Sampling per its model card:
+         * temperature 1.0, top_p 0.95. */
+        if (strstr(s_model, "nemotron") != NULL) {
+            cJSON *tk = cJSON_AddObjectToObject(req, "chat_template_kwargs");
+            cJSON_AddBoolToObject(tk, "enable_thinking", false);
+            cJSON_AddNumberToObject(req, "temperature", 1.0);
+            cJSON_AddNumberToObject(req, "top_p", 0.95);
+        }
         char *body = cJSON_PrintUnformatted(req);
         cJSON_Delete(req);
         if (body == NULL) break;
