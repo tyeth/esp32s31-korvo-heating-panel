@@ -3,7 +3,10 @@
 artifacts/device.log
 artifacts/device-virtual.log
 artifacts/device-hardware.log
-third_party/
+# third_party holds scratch checkouts (ignored) plus the vendored Lua the
+# voice agent's run_lua tool links (tracked).
+third_party/*
+!third_party/lua/
 sdk/
 .zc-objhash-*
 firmware/.zc-objhash-*
