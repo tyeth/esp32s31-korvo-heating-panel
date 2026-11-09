@@ -333,7 +333,8 @@ static esp_err_t agent_run(const char *user_text)
         cJSON_AddItemToObject(req, "messages", cJSON_Duplicate(messages, 1));
         cJSON *tools = cJSON_Parse(k_tools_json);
         cJSON_AddItemToObject(req, "tools", tools);
-        cJSON_AddNumberToObject(req, "temperature", 0.2);
+        /* No sampling knobs: Anthropic's compat endpoint refuses `temperature`
+         * on current models, and the default is fine for tool calling. */
         cJSON_AddNumberToObject(req, "max_tokens", 700);
         char *body = cJSON_PrintUnformatted(req);
         cJSON_Delete(req);
@@ -549,6 +550,42 @@ static int cmd_model(int argc, char **argv)
     snprintf(s_model, sizeof(s_model), "%s", argv[1]);
     printf("model set: %s\n", s_model);
     return 0;
+}
+
+/* ── settings-page access ────────────────────────────────────────────── */
+
+const char *app_agent_llm_url(void) { return s_llm_url; }
+const char *app_agent_model(void)   { return s_model; }
+bool app_agent_has_llm_key(void)    { return s_llm_key[0] != 0; }
+bool app_agent_has_stt_key(void)    { return s_stt_key[0] != 0; }
+
+esp_err_t app_agent_config_set(const char *llm_url, const char *model,
+                               const char *llm_key, const char *stt_key)
+{
+    if (llm_url && llm_url[0]) {
+        if (strlen(llm_url) >= sizeof(s_llm_url)) return ESP_ERR_INVALID_SIZE;
+        save_str("llm_url", llm_url);
+        snprintf(s_llm_url, sizeof(s_llm_url), "%s", llm_url);
+    }
+    if (model && model[0]) {
+        if (strlen(model) >= sizeof(s_model)) return ESP_ERR_INVALID_SIZE;
+        save_str("model", model);
+        snprintf(s_model, sizeof(s_model), "%s", model);
+    }
+    if (llm_key && llm_key[0]) {
+        if (strlen(llm_key) >= sizeof(s_llm_key)) return ESP_ERR_INVALID_SIZE;
+        save_str("llm_key", llm_key);
+        snprintf(s_llm_key, sizeof(s_llm_key), "%s", llm_key);
+    }
+    if (stt_key && stt_key[0]) {
+        if (strlen(stt_key) >= sizeof(s_stt_key)) return ESP_ERR_INVALID_SIZE;
+        save_str("stt_key", stt_key);
+        snprintf(s_stt_key, sizeof(s_stt_key), "%s", stt_key);
+    }
+    ESP_LOGI(TAG, "agent config updated (model %s, url %s, llm key %s, stt key %s)",
+             s_model, s_llm_url, s_llm_key[0] ? "set" : "missing",
+             s_stt_key[0] ? "set" : "missing");
+    return ESP_OK;
 }
 
 static int cmd_url(int argc, char **argv)

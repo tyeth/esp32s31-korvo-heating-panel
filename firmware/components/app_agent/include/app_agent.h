@@ -59,6 +59,18 @@ esp_err_t app_agent_handle_text(const char *text);
 /** NVS-backed setup + console commands. Call once at boot (after NVS). */
 esp_err_t app_agent_init(void);
 
+/* ── settings-page access ────────────────────────────────────────────── */
+
+const char *app_agent_llm_url(void);
+const char *app_agent_model(void);
+bool app_agent_has_llm_key(void);
+bool app_agent_has_stt_key(void);
+
+/** Update any subset of the agent's config; NULL or empty keeps the stored
+ *  value. Persisted to NVS and applied to the next request. */
+esp_err_t app_agent_config_set(const char *llm_url, const char *model,
+                               const char *llm_key, const char *stt_key);
+
 #ifdef __cplusplus
 }
 #endif

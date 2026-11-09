@@ -28,6 +28,7 @@
 #include "app_mqtt.h"
 #include "app_webui.h"
 #include "app_config.h"
+#include "app_agent.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,9 +41,11 @@
 
 static const char *TAG = "heating_web";
 
-/* The form: one entry per field, the key exactly as the page names it. */
-#define FORM_FIELDS         (8 + HEATING_ROOMS * 3)
-#define FORM_VALUE_MAX      (HEATING_TOPIC_MAX + 8)
+/* The form: one entry per field, the key exactly as the page names it. The
+ * value size is set by the longest credential the page carries — an agent
+ * bearer key (OpenAI project keys run ~165 characters). */
+#define FORM_FIELDS         (12 + HEATING_ROOMS * 3)
+#define FORM_VALUE_MAX      208
 
 typedef struct {
     const char *key;
@@ -55,6 +58,7 @@ static bool s_permit = false;
 
 static const char *const k_field_keys[FORM_FIELDS] = {
     "ssid", "pass", "broker", "user", "apass", "ca", "loglevel", "ledbri",
+    "agurl", "agmodel", "agkey", "agstt",
     "r0name", "r0trv", "r0sensor",
     "r1name", "r1trv", "r1sensor",
     "r2name", "r2trv", "r2sensor",
@@ -298,6 +302,45 @@ static void render_page(bool was_saved)
                          "tags stay quiet below it. The same setting is 'log * <LEVEL>' on "
                          "the console.</p>");
 
+    app_webui_send_chunk("<h2>Voice agent</h2>");
+    app_webui_send_chunk("<p style='font-size:12px;color:#888'>The cloud agent behind the wake "
+                         "word: speech goes to OpenAI Whisper, the transcript to the chat "
+                         "endpoint below. Pick a provider to fill in its endpoint and model, "
+                         "or choose Custom and type your own.</p>");
+    app_webui_send_chunk("<label>Provider<br><select id=\"agprov\" style=\"width:100%;padding:9px"
+                         ";margin-top:4px;background:#1e1e1e;color:#eee;border:1px solid #333"
+                         ";border-radius:6px\">"
+                         "<option value=\"\">Custom (edit below)</option>"
+                         "<option value=\"https://integrate.api.nvidia.com/v1/chat/completions"
+                         "|z-ai/glm-5.3-flash\">NVIDIA (GLM 5.3 Flash)</option>"
+                         "<option value=\"https://api.anthropic.com/v1/chat/completions"
+                         "|claude-haiku-5-5\">Anthropic (Claude Haiku 5.5)</option>"
+                         "<option value=\"https://api.openai.com/v1/chat/completions"
+                         "|gpt-4o-mini\">OpenAI (GPT-4o mini)</option>"
+                         "<option value=\"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                         "|gemini-3.8-flash\">Google (Gemini 3.8 Flash)</option>"
+                         "</select></label>"
+                         "<script>document.getElementById('agprov').addEventListener('change',"
+                         "function(){if(!this.value)return;var p=this.value.split('|');"
+                         "document.getElementsByName('agurl')[0].value=p[0];"
+                         "document.getElementsByName('agmodel')[0].value=p[1];});</script>");
+    field("agurl", "Chat completions URL (OpenAI-compatible)", app_agent_llm_url(), NULL);
+    field("agmodel", "Model id", app_agent_model(), NULL);
+    snprintf(line, sizeof(line),
+             "<label>Chat API key (%s; empty keeps it)<br>"
+             "<input name=\"agkey\" type=password autocomplete=\"off\"></label>",
+             app_agent_has_llm_key() ? "one is stored" : "none stored");
+    app_webui_send_chunk(line);
+    snprintf(line, sizeof(line),
+             "<label>Speech-to-text API key, OpenAI Whisper (%s; empty keeps it)<br>"
+             "<input name=\"agstt\" type=password autocomplete=\"off\"></label>",
+             app_agent_has_stt_key() ? "one is stored" : "none stored");
+    app_webui_send_chunk(line);
+    app_webui_send_chunk("<p style='font-size:12px;color:#888'>Saved in flash, used from the "
+                         "next request. The same settings are agent-url, agent-model, "
+                         "agent-key-llm and agent-key-stt on the console; agent-test "
+                         "\"…\" tries the agent without speaking.</p>");
+
     app_webui_send_chunk("<button type=submit name=submit value=1>Save</button>");
     app_webui_send_chunk("<button class=alt type=submit name=permit value=1 "
                          "formaction='/settings?action=permit_join'>Permit join (4 min)</button>");
@@ -408,6 +451,15 @@ static void apply_form(void)
         }
     }
 
+    /* The agent: each empty field keeps the stored value (the keys are never
+     * echoed back into the page). */
+    if (form_get("agurl")[0] || form_get("agmodel")[0] ||
+        form_get("agkey")[0] || form_get("agstt")[0]) {
+        esp_err_t err = app_agent_config_set(form_get("agurl"), form_get("agmodel"),
+                                             form_get("agkey"), form_get("agstt"));
+        if (err != ESP_OK) ESP_LOGW(TAG, "agent config not saved: %s", esp_err_to_name(err));
+    }
+
     if (form_get("ssid")[0]) {
         /* An empty password keeps the stored one: the page never shows it. */
         esp_err_t err = app_mqtt_set_wifi(form_get("ssid"), form_get("pass"));
@@ -423,7 +475,7 @@ static void apply_form(void)
  * a stack fault here takes the whole panel down instead of answering a request.
  * app_webui serves one settings request at a time (the request being served is
  * held in s_stgs_req), so a single buffer is enough. */
-static char s_body[3000];
+static char s_body[4096];
 
 static esp_err_t settings_entry(void)
 {
