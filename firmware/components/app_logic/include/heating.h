@@ -149,6 +149,19 @@ esp_err_t heating_log_level_set(const char *name);
  *  asked. */
 int heating_request_states(void);
 
+/* ── history ─────────────────────────────────────────────────────────────
+ *
+ * Each room's shown temperature, sampled on a fixed clock for the card detail
+ * chart. A slot holds HEATING_HIST_NONE when the room had no fresh reading at
+ * sample time — a silent TRV draws as a gap, not a flat line. */
+#define HEATING_HIST_LEN       144            /* × 2 min ≈ the last 4.8 hours */
+#define HEATING_HIST_PERIOD_S  120
+#define HEATING_HIST_NONE      INT16_MIN
+
+/** Copy room @p idx's samples, oldest first. Returns how many were copied
+ *  (fewer than @p max until the buffer has wrapped once). */
+int heating_history_get(int idx, int16_t *out, int max);
+
 /* ── inbound ─────────────────────────────────────────────────────────── */
 
 /** Feed one state message received on @p topic. */

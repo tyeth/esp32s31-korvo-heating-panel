@@ -86,6 +86,21 @@ static bool         s_dimmed = false;
 static lv_indev_t *s_touch_indev = NULL;
 static int s_touch_x = -1;
 static int s_touch_y = -1;
+/* A tap that closed an overlay must not also land on the card under it. */
+static bool s_swallow_release = false;
+
+/* The card detail overlay (chart + last-seen), NULL while closed. */
+static lv_obj_t *s_detail = NULL;
+static int       s_detail_room = -1;
+static lv_obj_t *s_detail_current = NULL;
+static lv_obj_t *s_detail_stamp = NULL;
+static lv_obj_t *s_detail_target = NULL;
+static lv_obj_t *s_detail_hi = NULL;
+static lv_obj_t *s_detail_lo = NULL;
+static lv_obj_t *s_detail_span = NULL;
+static lv_obj_t *s_detail_chart = NULL;
+static lv_chart_series_t *s_detail_series = NULL;
+static int32_t   s_detail_vals[HEATING_HIST_LEN];   /* the chart's ext array */
 
 static uint32_t now_ms(void)
 {
@@ -156,35 +171,52 @@ void heating_voice_seconds_left(int seconds)
 static void touch_hit(int x, int y);
 static void on_touch_press(lv_event_t *e);
 static void on_touch_release(lv_event_t *e);
+static void detail_open(int i);
+static void detail_close(void);
+static void detail_refresh(void);
 
 /**
- * Select-or-adjust on one tap — the spec's single active room: a tap inside a
- * card selects it (and only its −/+ are live), a tap on the selected card's
- * left or right third changes its target by 0.5 °C and publishes it.
+ * One tap does the thing it lands on — no arming tap first: the left third of
+ * ANY card is −0.5 °C, the right third +0.5 °C (selecting the room as a side
+ * effect), and the middle opens that room's detail overlay with the history
+ * chart. Every outcome is said out loud on the banner.
  */
 static void touch_hit(int x, int y)
 {
     touch_activity();
+    if (s_swallow_release) {                 /* this tap closed an overlay */
+        s_swallow_release = false;
+        return;
+    }
     for (int i = 0; i < HEATING_ROOMS; i++) {
         int cx = GRID_X + (i % 2) * (CARD_W + GRID_GAP_X);
         int cy = GRID_Y + (i / 2) * (CARD_H + GRID_GAP_Y);
         if (x < cx || x >= cx + CARD_W || y < cy || y >= cy + CARD_H) continue;
 
         heating_room_t *room = heating_room(i);
-        if (i != s_sel) {
-            heating_ui_select(i);
-            return;
-        }
+        if (i != s_sel) heating_ui_select(i);
+
         int local = x - cx;
         int16_t step = 0;
         if (local < CARD_W / 3) step = -HEATING_STEP_TENTH;
         else if (local >= CARD_W * 2 / 3) step = HEATING_STEP_TENTH;
-        else return;                               /* middle: keep it selected */
+        else {
+            detail_open(i);                        /* middle: the room's chart */
+            return;
+        }
 
         int16_t want = (int16_t)(heating_room_target_ui(room) + step);
+        char msg[64];
         switch (heating_request_target(i, want)) {
-            case HEATING_REQ_OK:
+            case HEATING_REQ_OK: {
+                /* The card itself keeps showing the TRV-reported target until
+                 * the valve echoes, so the banner says what was just SENT. */
+                int16_t t = heating_clamp_tenth(want);
+                snprintf(msg, sizeof(msg), "%s -> %d.%d sent", room->cfg.name,
+                         (int)(t / 10), (int)((t % 10 + 10) % 10));
+                heating_ui_banner(msg);
                 break;
+            }
             case HEATING_REQ_ALREADY_SET:
                 heating_ui_banner("Already set");
                 break;
@@ -225,6 +257,7 @@ static void on_popup_event(lv_event_t *e)
 {
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
         touch_activity();
+        s_swallow_release = true;   /* the release must not tap the card below */
         popup_close();
     }
 }
@@ -278,6 +311,159 @@ void heating_ui_settings_popup(void)
     lvgl_port_unlock();
 }
 
+/* ── the card detail overlay ──────────────────────────────────────────────
+ *
+ * The middle of a card opens this: the room large, when it last reported, and
+ * the sampled history as a line chart — a silent TRV shows as a gap, which is
+ * exactly the complaint "this card is not updating" made visible. Created and
+ * refreshed on the LVGL task only (touch events and the UI timer), so no lock
+ * is taken here. */
+
+static void detail_close(void)
+{
+    if (s_detail != NULL) {
+        lv_obj_delete(s_detail);
+        s_detail = NULL;
+        s_detail_room = -1;
+    }
+}
+
+static void on_detail_event(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        touch_activity();
+        s_swallow_release = true;
+        detail_close();
+    }
+}
+
+static void detail_refresh(void)
+{
+    if (s_detail == NULL || s_detail_room < 0) return;
+    heating_room_t *room = heating_room(s_detail_room);
+    char buf[64];
+
+    int16_t tenth = 0;
+    bool stale = true;
+    int64_t seen = 0;
+    if (heating_room_current(room, &tenth, &stale, &seen)) {
+        snprintf(buf, sizeof(buf), "%d.%d\xC2\xB0", (int)(tenth / 10), (int)((tenth % 10 + 10) % 10));
+        lv_label_set_text(s_detail_current, buf);
+        lv_obj_set_style_text_color(s_detail_current,
+                                    stale ? lv_color_hex(0x777777) : lv_color_hex(0xF0F0F0), 0);
+        char when[16];
+        if (heating_format_time(seen, when, sizeof(when))) {
+            snprintf(buf, sizeof(buf), stale ? "last report %s (stale)" : "last report %s", when);
+        } else {
+            snprintf(buf, sizeof(buf), stale ? "stale" : "reporting");
+        }
+        lv_label_set_text(s_detail_stamp, buf);
+    } else {
+        lv_label_set_text(s_detail_current, "--.-");
+        lv_obj_set_style_text_color(s_detail_current, lv_color_hex(0x777777), 0);
+        lv_label_set_text(s_detail_stamp, "no reading yet");
+    }
+
+    int16_t target = heating_room_target_ui(room);
+    snprintf(buf, sizeof(buf), "target %d.%d\xC2\xB0  -  %s",
+             (int)(target / 10), (int)((target % 10 + 10) % 10),
+             room->mode == HEATING_HEATING ? "heat" : "off");
+    lv_label_set_text(s_detail_target, buf);
+
+    /* The chart: right-aligned history, newest sample at the right edge. */
+    int16_t hist[HEATING_HIST_LEN];
+    int n = heating_history_get(s_detail_room, hist, HEATING_HIST_LEN);
+    int32_t lo = INT32_MAX, hi = INT32_MIN;
+    for (int k = 0; k < HEATING_HIST_LEN; k++) {
+        int16_t v = (k < HEATING_HIST_LEN - n) ? HEATING_HIST_NONE : hist[k - (HEATING_HIST_LEN - n)];
+        if (v == HEATING_HIST_NONE) {
+            s_detail_vals[k] = LV_CHART_POINT_NONE;
+        } else {
+            s_detail_vals[k] = v;
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+        }
+    }
+    if (lo > hi) {                            /* nothing sampled yet */
+        lo = 150; hi = 250;
+        lv_label_set_text(s_detail_hi, "");
+        lv_label_set_text(s_detail_lo, "");
+        lv_label_set_text(s_detail_span, "chart fills in as samples arrive (one per 2 min)");
+    } else {
+        lo -= 5; hi += 5;
+        snprintf(buf, sizeof(buf), "%d.%d", (int)(hi / 10), (int)((hi % 10 + 10) % 10));
+        lv_label_set_text(s_detail_hi, buf);
+        snprintf(buf, sizeof(buf), "%d.%d", (int)(lo / 10), (int)((lo % 10 + 10) % 10));
+        lv_label_set_text(s_detail_lo, buf);
+        int mins = n * HEATING_HIST_PERIOD_S / 60;
+        snprintf(buf, sizeof(buf), "last %dh %02dm - gaps are missed reports", mins / 60, mins % 60);
+        lv_label_set_text(s_detail_span, buf);
+    }
+    lv_chart_set_axis_range(s_detail_chart, LV_CHART_AXIS_PRIMARY_Y, lo, hi);
+    lv_chart_refresh(s_detail_chart);
+}
+
+static void detail_open(int i)
+{
+    if (!s_ui_ready || s_screen == NULL) return;
+    detail_close();
+    s_detail_room = i;
+
+    s_detail = lv_obj_create(s_screen);
+    lv_obj_set_size(s_detail, 720, 440);
+    lv_obj_center(s_detail);
+    lv_obj_set_style_bg_color(s_detail, lv_color_hex(0x161616), 0);
+    lv_obj_set_style_border_color(s_detail, lv_color_hex(0xE0A06A), 0);
+    lv_obj_set_style_border_width(s_detail, 2, 0);
+    lv_obj_set_style_radius(s_detail, 12, 0);
+    lv_obj_set_style_pad_all(s_detail, 16, 0);
+    lv_obj_remove_flag(s_detail, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = make_label(s_detail, &lv_font_montserrat_28, lv_color_hex(0xE0A06A));
+    lv_label_set_text(title, heating_room(i)->cfg.name);
+    lv_obj_set_pos(title, 0, 0);
+
+    s_detail_current = make_label(s_detail, &lv_font_montserrat_48, lv_color_hex(0xF0F0F0));
+    lv_obj_set_pos(s_detail_current, 0, 40);
+
+    s_detail_stamp = make_label(s_detail, &lv_font_montserrat_14, lv_color_hex(0x888888));
+    lv_obj_set_pos(s_detail_stamp, 0, 102);
+
+    s_detail_target = make_label(s_detail, &lv_font_montserrat_20, lv_color_hex(0x9AD0F5));
+    lv_obj_align(s_detail_target, LV_ALIGN_TOP_RIGHT, 0, 8);
+
+    s_detail_chart = lv_chart_create(s_detail);
+    lv_obj_set_size(s_detail_chart, 688, 240);
+    lv_obj_align(s_detail_chart, LV_ALIGN_BOTTOM_MID, 0, -30);
+    lv_chart_set_type(s_detail_chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(s_detail_chart, HEATING_HIST_LEN);
+    lv_chart_set_div_line_count(s_detail_chart, 5, 7);
+    lv_obj_set_style_bg_color(s_detail_chart, lv_color_hex(0x101010), 0);
+    lv_obj_set_style_border_color(s_detail_chart, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_line_color(s_detail_chart, lv_color_hex(0x262626), LV_PART_MAIN);
+    lv_obj_set_style_size(s_detail_chart, 0, 0, LV_PART_INDICATOR);  /* no dots */
+    lv_obj_set_style_line_width(s_detail_chart, 3, LV_PART_ITEMS);
+    s_detail_series = lv_chart_add_series(s_detail_chart, lv_color_hex(0xE0A06A),
+                                          LV_CHART_AXIS_PRIMARY_Y);
+    lv_chart_set_series_ext_y_array(s_detail_chart, s_detail_series, s_detail_vals);
+
+    s_detail_hi = make_label(s_detail, &lv_font_montserrat_12, lv_color_hex(0x9AD0F5));
+    lv_obj_align_to(s_detail_hi, s_detail_chart, LV_ALIGN_OUT_TOP_LEFT, 2, -2);
+    s_detail_lo = make_label(s_detail, &lv_font_montserrat_12, lv_color_hex(0x9AD0F5));
+    lv_obj_align_to(s_detail_lo, s_detail_chart, LV_ALIGN_OUT_BOTTOM_LEFT, 2, 2);
+    s_detail_span = make_label(s_detail, &lv_font_montserrat_12, lv_color_hex(0x888888));
+    lv_obj_align_to(s_detail_span, s_detail_chart, LV_ALIGN_OUT_BOTTOM_RIGHT, -2, 2);
+
+    lv_obj_t *hint = make_label(s_detail, &lv_font_montserrat_12, lv_color_hex(0x666666));
+    lv_label_set_text(hint, "tap to close");
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_add_flag(s_detail, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_detail, on_detail_event, LV_EVENT_PRESSED, NULL);
+
+    detail_refresh();
+}
+
 /* ── painting ─────────────────────────────────────────────────────────── */
 
 static void style_panel(lv_obj_t *obj)
@@ -314,6 +500,10 @@ static void build_screen(void)
         lv_obj_remove_flag(w->card, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_pad_all(w->card, 12, 0);
         style_panel(w->card);
+        /* A finger on the card answers at once, before the release decides
+         * what the tap meant: LVGL's own pressed state, no code path. */
+        lv_obj_set_style_bg_color(w->card, lv_color_hex(0x2E2E2E), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(w->card, lv_color_hex(0x9AD0F5), LV_STATE_PRESSED);
 
         w->name = make_label(w->card, &lv_font_montserrat_20, lv_color_hex(0xE0A06A));
         lv_obj_set_pos(w->name, 0, 0);
@@ -334,13 +524,24 @@ static void build_screen(void)
         w->target = make_label(w->card, &lv_font_montserrat_24, lv_color_hex(0x9AD0F5));
         lv_obj_align(w->target, LV_ALIGN_BOTTOM_MID, 0, 0);
 
+        /* The −/+ are drawn as buttons (a filled circle around the glyph) so
+         * the card SAYS it is tappable; the true hit zone stays the whole
+         * third of the card, which is far bigger than the circle. */
         w->minus = make_label(w->card, &lv_font_montserrat_24, lv_color_hex(0x888888));
         lv_label_set_text(w->minus, LV_SYMBOL_MINUS);
-        lv_obj_align(w->minus, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(w->minus, lv_color_hex(0x2A2A2A), 0);
+        lv_obj_set_style_bg_opa(w->minus, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(w->minus, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_pad_all(w->minus, 10, 0);
+        lv_obj_align(w->minus, LV_ALIGN_BOTTOM_LEFT, -2, 8);
 
         w->plus = make_label(w->card, &lv_font_montserrat_24, lv_color_hex(0x888888));
         lv_label_set_text(w->plus, LV_SYMBOL_PLUS);
-        lv_obj_align(w->plus, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+        lv_obj_set_style_bg_color(w->plus, lv_color_hex(0x2A2A2A), 0);
+        lv_obj_set_style_bg_opa(w->plus, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(w->plus, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_pad_all(w->plus, 10, 0);
+        lv_obj_align(w->plus, LV_ALIGN_BOTTOM_RIGHT, 2, 8);
 
         /* LVGL events do not bubble without LV_OBJ_FLAG_EVENT_BUBBLE, and the
          * cards (plain lv_obj's) are clickable, so they swallowed every tap:
@@ -426,8 +627,10 @@ static void paint_card(int i)
     bool selected = (i == s_sel);
     lv_obj_set_style_border_color(w->card, selected ? lv_color_hex(0xE0A06A) : lv_color_hex(0x333333), 0);
     lv_obj_set_style_border_width(w->card, selected ? 3 : 1, 0);
-    /* Only the selected room's −/+ are live (and only while online). */
-    lv_color_t ctrl = (selected && s_online_ui) ? lv_color_hex(0x9AD0F5) : lv_color_hex(0x444444);
+    /* Every room's −/+ act on the first tap now, so they all read as live
+     * while online; the selected card's pair is simply brighter. */
+    lv_color_t ctrl = !s_online_ui ? lv_color_hex(0x444444)
+                    : selected     ? lv_color_hex(0x9AD0F5) : lv_color_hex(0x999999);
     lv_obj_set_style_text_color(w->minus, ctrl, 0);
     lv_obj_set_style_text_color(w->plus, ctrl, 0);
 }
@@ -497,6 +700,7 @@ static void paint_all(void)
     paint_footer();
     paint_banner();
     paint_dimming();
+    detail_refresh();            /* keeps an open overlay's numbers live */
 }
 
 /* ── the LVGL timer ──────────────────────────────────────────────────── */

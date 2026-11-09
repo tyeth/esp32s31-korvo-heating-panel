@@ -26,6 +26,7 @@
 
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <esp_heap_caps.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 #include <esp_system.h>
@@ -55,6 +56,114 @@ static const char *const k_unheated_names[] = { "Kitchen", "Bedroom" };
 
 static heating_room_t s_rooms[HEATING_ROOMS];
 static volatile bool s_online = false;
+
+/* ── history: the detail chart's data ────────────────────────────────────
+ *
+ * One PSRAM ring per room, written every HEATING_HIST_PERIOD_S from an
+ * esp_timer and read by the LVGL task. int16 slot writes are atomic on this
+ * chip and the head only ever advances, so a read racing the writer sees at
+ * worst a chart one sample out of date — no lock. */
+static int16_t *s_hist = NULL;               /* [HEATING_ROOMS][HEATING_HIST_LEN] */
+static volatile int s_hist_head = 0;         /* next slot to write */
+static volatile int s_hist_count = 0;        /* filled slots, saturates at LEN */
+
+/* A room whose reading has gone stale gets its TRV's OWN last-reported
+ * setpoint written back at it: these Tuya TRVs answer any setpoint write with
+ * a full state report (local_temperature included), and they cannot be read
+ * (/get has no converter). Writing back the value the valve itself reported
+ * changes nothing on the radiator — it only provokes the report. One room per
+ * tick, one nudge per room per 15 minutes, battery first. */
+#define HEATING_COAX_MS (15 * 60 * 1000)
+static int64_t s_last_coax_ms[HEATING_ROOMS];
+
+static int64_t now_ms(void);
+static void command_topic_for(const char *stored, char *out, size_t len);
+static void format_tenth(int16_t tenth, char *buf, size_t len);
+
+static void history_coax_stale(void)
+{
+    if (!heating_online()) return;
+    int64_t now = now_ms();
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        heating_room_t *room = &s_rooms[i];
+        if (room->cfg.trv_topic[0] == 0) continue;
+        int16_t tenth = 0;
+        bool stale = true;
+        if (heating_room_current(room, &tenth, &stale, NULL) && !stale) continue;
+        if (now - s_last_coax_ms[i] < HEATING_COAX_MS) continue;
+        if (!room->target.valid) continue;      /* nothing of its own to echo */
+        s_last_coax_ms[i] = now;
+
+        char value[8];
+        char payload[48];
+        char cmd_topic[HEATING_TOPIC_MAX + 32];
+        format_tenth(room->target.tenth, value, sizeof(value));
+        command_topic_for(room->cfg.trv_topic, cmd_topic, sizeof(cmd_topic));
+        int n;
+        if (strstr(cmd_topic, "/set/") != NULL) {
+            n = snprintf(payload, sizeof(payload), "%s", value);
+        } else {
+            n = snprintf(payload, sizeof(payload), "{\"current_heating_setpoint\": \"%s\"}", value);
+        }
+        if (app_mqtt_publish(cmd_topic, payload, n, 1, false) >= 0) {
+            ESP_LOGI(TAG, "%s stale — rewrote its own setpoint %s to coax a report",
+                     room->cfg.name, value);
+        }
+        return;                                  /* one nudge per tick */
+    }
+}
+
+static void history_sample_cb(void *arg)
+{
+    (void)arg;
+    if (s_hist == NULL) return;
+    int head = s_hist_head;
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        int16_t tenth = 0;
+        bool stale = true;
+        bool ok = heating_room_current(&s_rooms[i], &tenth, &stale, NULL);
+        s_hist[i * HEATING_HIST_LEN + head] = (ok && !stale) ? tenth : HEATING_HIST_NONE;
+    }
+    s_hist_head = (head + 1) % HEATING_HIST_LEN;
+    if (s_hist_count < HEATING_HIST_LEN) s_hist_count = s_hist_count + 1;
+
+    history_coax_stale();
+}
+
+static void history_init(void)
+{
+    s_hist = (int16_t *)heap_caps_malloc(
+        HEATING_ROOMS * HEATING_HIST_LEN * sizeof(int16_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_hist == NULL) {                    /* no PSRAM: the chart stays empty */
+        ESP_LOGW(TAG, "no PSRAM for the history ring — detail charts will be empty");
+        return;
+    }
+    for (int i = 0; i < HEATING_ROOMS * HEATING_HIST_LEN; i++) s_hist[i] = HEATING_HIST_NONE;
+
+    const esp_timer_create_args_t args = {
+        .callback = history_sample_cb,
+        .name = "heat_hist",
+    };
+    esp_timer_handle_t t;
+    if (esp_timer_create(&args, &t) == ESP_OK) {
+        esp_timer_start_periodic(t, (uint64_t)HEATING_HIST_PERIOD_S * 1000000ULL);
+    }
+}
+
+int heating_history_get(int idx, int16_t *out, int max)
+{
+    if (s_hist == NULL || out == NULL || idx < 0 || idx >= HEATING_ROOMS) return 0;
+    int count = s_hist_count;
+    int head = s_hist_head;                  /* snapshot; one-sample race is fine */
+    if (count > max) count = max;
+    const int16_t *ring = &s_hist[idx * HEATING_HIST_LEN];
+    for (int k = 0; k < count; k++) {
+        int slot = (head - count + k + HEATING_HIST_LEN) % HEATING_HIST_LEN;
+        out[k] = ring[slot];
+    }
+    return count;
+}
 
 /* ── small helpers ───────────────────────────────────────────────────── */
 
@@ -178,6 +287,8 @@ esp_err_t heating_init(void)
         s_rooms[i].read_target = 200;
         s_rooms[i].last_pub_tenth = 200;
     }
+
+    history_init();
 
     nvs_handle_t h;
     if (nvs_open(HEATING_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
@@ -350,7 +461,12 @@ heating_req_result_t heating_request_target(int idx, int16_t tenth)
     }
     room->last_pub_tenth = tenth;
     room->last_pub_ms = now;
-    /* Nothing is claimed on screen: the card follows the TRV's own report. */
+    /* The card claims the sent value at once. It used to wait for the TRV's
+     * echo, but with reports this rare the shown target never moved, so a
+     * second + computed the SAME setpoint from the unchanged card and died on
+     * the duplicate guard: stepping twice sent one step. The TRV's next state
+     * message still reconciles the card either way. */
+    room->read_target = tenth;
     ESP_LOGI(TAG, "%s -> %s  %s", room->cfg.name, value, cmd_topic);
     return HEATING_REQ_OK;
 }
