@@ -547,6 +547,7 @@ esp_err_t app_logic_init(void)
     strip_idle();
 
     agent_ops_install();
+    heating_history_fetch_register_console();
 
     ESP_LOGI(TAG, "heating panel logic up");
     return ESP_OK;

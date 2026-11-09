@@ -95,6 +95,7 @@ static lv_obj_t *s_detail_target = NULL;
 static lv_obj_t *s_detail_hi = NULL;
 static lv_obj_t *s_detail_lo = NULL;
 static lv_obj_t *s_detail_span = NULL;
+static lv_obj_t *s_detail_scale_lbl = NULL;   /* "48 h", inside the chart */
 static lv_obj_t *s_detail_chart = NULL;
 static lv_chart_series_t *s_detail_series = NULL;
 /* The chart draws at most this many points; wider windows are bucket-averaged. */
@@ -417,19 +418,27 @@ static void detail_refresh(void)
         lo = 150; hi = 250;
         lv_label_set_text(s_detail_hi, "");
         lv_label_set_text(s_detail_lo, "");
-        snprintf(buf, sizeof(buf), "last %dh: no samples yet - tap chart for scale", hours);
-        lv_label_set_text(s_detail_span, buf);
+        lv_label_set_text(s_detail_span, "no samples in this window yet");
     } else {
         lo -= 5; hi += 5;
         snprintf(buf, sizeof(buf), "%d.%d", (int)(hi / 10), (int)((hi % 10 + 10) % 10));
         lv_label_set_text(s_detail_hi, buf);
         snprintf(buf, sizeof(buf), "%d.%d", (int)(lo / 10), (int)((lo % 10 + 10) % 10));
         lv_label_set_text(s_detail_lo, buf);
-        snprintf(buf, sizeof(buf), "last %dh - gaps are missed reports - tap chart for scale", hours);
-        lv_label_set_text(s_detail_span, buf);
+        lv_label_set_text(s_detail_span, "gaps are missed reports");
     }
+    snprintf(buf, sizeof(buf), "%d h  (tap to zoom)", hours);
+    lv_label_set_text(s_detail_scale_lbl, buf);
     lv_chart_set_axis_range(s_detail_chart, LV_CHART_AXIS_PRIMARY_Y, lo, hi);
     lv_chart_refresh(s_detail_chart);
+
+    /* These labels were positioned while still empty, and LVGL's align_to is
+     * a one-time placement: re-run it now the text has its real size, or the
+     * span/scale text grows out of the overlay and is clipped away. */
+    lv_obj_align_to(s_detail_hi, s_detail_chart, LV_ALIGN_OUT_TOP_LEFT, 2, -2);
+    lv_obj_align_to(s_detail_lo, s_detail_chart, LV_ALIGN_OUT_BOTTOM_LEFT, 2, 2);
+    lv_obj_align_to(s_detail_span, s_detail_chart, LV_ALIGN_OUT_BOTTOM_RIGHT, -2, 2);
+    lv_obj_align_to(s_detail_scale_lbl, s_detail_chart, LV_ALIGN_TOP_RIGHT, -8, 4);
 }
 
 static void detail_open(int i)
@@ -479,11 +488,10 @@ static void detail_open(int i)
     lv_chart_set_series_ext_y_array(s_detail_chart, s_detail_series, s_detail_vals);
 
     s_detail_hi = make_label(s_detail, &lv_font_montserrat_12, lv_color_hex(0x9AD0F5));
-    lv_obj_align_to(s_detail_hi, s_detail_chart, LV_ALIGN_OUT_TOP_LEFT, 2, -2);
     s_detail_lo = make_label(s_detail, &lv_font_montserrat_12, lv_color_hex(0x9AD0F5));
-    lv_obj_align_to(s_detail_lo, s_detail_chart, LV_ALIGN_OUT_BOTTOM_LEFT, 2, 2);
     s_detail_span = make_label(s_detail, &lv_font_montserrat_12, lv_color_hex(0x888888));
-    lv_obj_align_to(s_detail_span, s_detail_chart, LV_ALIGN_OUT_BOTTOM_RIGHT, -2, 2);
+    /* The window size lives ON the chart, where the tap that changes it lands. */
+    s_detail_scale_lbl = make_label(s_detail_chart, &lv_font_montserrat_16, lv_color_hex(0xE0A06A));
 
     lv_obj_t *hint = make_label(s_detail, &lv_font_montserrat_12, lv_color_hex(0x666666));
     lv_label_set_text(hint, "tap to close");

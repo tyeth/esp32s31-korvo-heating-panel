@@ -162,6 +162,27 @@ int heating_request_states(void);
  *  (fewer than @p max until the buffer has wrapped once). */
 int heating_history_get(int idx, int16_t *out, int max);
 
+/** Backfill one historical reading (epoch seconds, 0.1 °C) into the ring —
+ *  used by the Home Assistant recorder fetch at boot. Live samples win: a
+ *  slot already holding a value is left alone. Returns 1 when placed, 0 when
+ *  outside the window, -1 before SNTP (or with no ring). */
+int heating_history_seed(int idx, int64_t epoch_s, int16_t tenth);
+
+/** Fetch the last 48 h from Home Assistant's recorder (REST API) and seed the
+ *  ring. Needs the URL + long-lived token stored via heating_ha_config_set;
+ *  runs once per boot, in its own task, when the broker session first comes
+ *  up. Safe to call again (console `ha-backfill`). */
+void heating_history_backfill_start(void);
+
+/** Store the Home Assistant base URL ("https://host:8123") and long-lived
+ *  access token for the history fetch. NULL/empty keeps the stored value. */
+esp_err_t heating_ha_config_set(const char *url, const char *token);
+const char *heating_ha_url(void);
+bool heating_ha_has_token(void);
+
+/** The ha-config / ha-backfill console commands. Call once at boot. */
+void heating_history_fetch_register_console(void);
+
 /* ── inbound ─────────────────────────────────────────────────────────── */
 
 /** Feed one state message received on @p topic. */

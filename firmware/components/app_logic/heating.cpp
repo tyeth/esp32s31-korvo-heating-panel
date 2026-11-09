@@ -115,6 +115,10 @@ static void history_coax_stale(void)
     }
 }
 
+/* Epoch second of the newest written slot (head-1), for mapping backfilled
+ * timestamps onto slots; 0 until SNTP and the first sample. */
+static volatile int64_t s_hist_anchor = 0;
+
 static void history_sample_cb(void *arg)
 {
     (void)arg;
@@ -128,8 +132,30 @@ static void history_sample_cb(void *arg)
     }
     s_hist_head = (head + 1) % HEATING_HIST_LEN;
     if (s_hist_count < HEATING_HIST_LEN) s_hist_count = s_hist_count + 1;
+    time_t t = time(NULL);
+    if (t > 1600000000) s_hist_anchor = t;
 
     history_coax_stale();
+}
+
+int heating_history_seed(int idx, int64_t epoch_s, int16_t tenth)
+{
+    if (s_hist == NULL || idx < 0 || idx >= HEATING_ROOMS) return -1;
+    int64_t anchor = s_hist_anchor;
+    if (anchor == 0) {
+        time_t t = time(NULL);
+        if (t < 1600000000) return -1;           /* no wall clock yet */
+        anchor = t;
+    }
+    int64_t delta = (anchor - epoch_s) / HEATING_HIST_PERIOD_S;
+    if (delta < 0 || delta >= HEATING_HIST_LEN) return 0;
+    int slot = (s_hist_head - 1 - (int)delta + 2 * HEATING_HIST_LEN) % HEATING_HIST_LEN;
+    int16_t *p = &s_hist[idx * HEATING_HIST_LEN + slot];
+    if (*p == HEATING_HIST_NONE) *p = tenth;     /* live samples win */
+    int need = (int)delta + 1;
+    if (need > HEATING_HIST_LEN) need = HEATING_HIST_LEN;
+    if (s_hist_count < need) s_hist_count = need;
+    return 1;
 }
 
 static void history_init(void)
@@ -581,6 +607,14 @@ void heating_broker_ready(bool online)
     int polled = heating_request_states();
     ESP_LOGI(TAG, "subscribed to %d room topic(s); requested fresh state of %d", subscribed, polled);
     heating_log_diag();
+
+    /* The first session of the boot also fills the charts from Home
+     * Assistant's recorder (a no-op until a token is stored). */
+    static bool s_backfilled = false;
+    if (!s_backfilled) {
+        s_backfilled = true;
+        heating_history_backfill_start();
+    }
 }
 
 /* Ask zigbee2mqtt for a device's current state: a read request on the

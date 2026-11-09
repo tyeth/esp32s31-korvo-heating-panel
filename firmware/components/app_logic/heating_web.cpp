@@ -44,7 +44,7 @@ static const char *TAG = "heating_web";
 /* The form: one entry per field, the key exactly as the page names it. The
  * value size is set by the longest credential the page carries — an agent
  * bearer key (OpenAI project keys run ~165 characters). */
-#define FORM_FIELDS         (12 + HEATING_ROOMS * 3)
+#define FORM_FIELDS         (14 + HEATING_ROOMS * 3)
 #define FORM_VALUE_MAX      208
 
 typedef struct {
@@ -58,7 +58,7 @@ static bool s_permit = false;
 
 static const char *const k_field_keys[FORM_FIELDS] = {
     "ssid", "pass", "broker", "user", "apass", "ca", "loglevel", "ledbri",
-    "agurl", "agmodel", "agkey", "agstt",
+    "agurl", "agmodel", "agkey", "agstt", "haurl", "hatok",
     "r0name", "r0trv", "r0sensor",
     "r1name", "r1trv", "r1sensor",
     "r2name", "r2trv", "r2sensor",
@@ -343,6 +343,18 @@ static void render_page(bool was_saved)
                          "agent-key-llm and agent-key-stt on the console; agent-test "
                          "\"…\" tries the agent without speaking.</p>");
 
+    app_webui_send_chunk("<h2>Chart history (Home Assistant)</h2>");
+    app_webui_send_chunk("<p style='font-size:12px;color:#888'>With a long-lived access token "
+                         "(HA profile &gt; Security) the panel fills its 48-hour temperature "
+                         "charts from Home Assistant's recorder at boot, instead of starting "
+                         "empty.</p>");
+    field("haurl", "Home Assistant URL", heating_ha_url(), "https://homeassistant.local:8123");
+    snprintf(line, sizeof(line),
+             "<label>Long-lived access token (%s; empty keeps it)<br>"
+             "<input name=\"hatok\" type=password autocomplete=\"off\"></label>",
+             heating_ha_has_token() ? "one is stored" : "none stored");
+    app_webui_send_chunk(line);
+
     app_webui_send_chunk("<button type=submit name=submit value=1>Save</button>");
     app_webui_send_chunk("<button class=alt type=submit name=permit value=1 "
                          "formaction='/settings?action=permit_join'>Permit join (4 min)</button>");
@@ -460,6 +472,12 @@ static void apply_form(void)
         esp_err_t err = app_agent_config_set(form_get("agurl"), form_get("agmodel"),
                                              form_get("agkey"), form_get("agstt"));
         if (err != ESP_OK) ESP_LOGW(TAG, "agent config not saved: %s", esp_err_to_name(err));
+    }
+
+    if (form_get("haurl")[0] || form_get("hatok")[0]) {
+        esp_err_t err = heating_ha_config_set(form_get("haurl"), form_get("hatok"));
+        if (err != ESP_OK) ESP_LOGW(TAG, "HA recorder config not saved: %s", esp_err_to_name(err));
+        else heating_history_backfill_start();
     }
 
     if (form_get("ssid")[0]) {
