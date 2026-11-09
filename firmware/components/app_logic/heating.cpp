@@ -34,12 +34,14 @@
 
 static const char *TAG = "heating";
 
-/* The owner's four valves, pre-filled so re-pairing a room is a topic edit. */
+/* The owner's four valves, pre-filled so re-pairing a room is a topic edit.
+ * The rooms are as Home Assistant's device areas have them (the original
+ * table was rotated by one: only Living room matched its radiator). */
 static const heating_room_cfg_t k_defaults[HEATING_ROOMS] = {
-    { "Bathroom",    "zigbee2mqtt/0xa4c1383b5b3d7063", "" },
-    { "Hallway",     "zigbee2mqtt/0xa4c13852a667eedf", "" },
-    { "Office",      "zigbee2mqtt/0xa4c13829e3ee602b", "" },
-    { "Living room", "zigbee2mqtt/0xa4c13829aa5a7009", "" },
+    { "Bathroom",    "zigbee2mqtt/0xa4c13852a667eedf", "" },   /* TS0601_thermostat_3 */
+    { "Hallway",     "zigbee2mqtt/0xa4c13829e3ee602b", "" },   /* AVATTO ME167 */
+    { "Office",      "zigbee2mqtt/0xa4c1383b5b3d7063", "" },   /* AR331Pro */
+    { "Living room", "zigbee2mqtt/0xa4c13829aa5a7009", "" },   /* AVATTO TS0601 */
 };
 
 #define HEATING_NVS_NS "heating"
