@@ -21,7 +21,7 @@ idf_component_register(
          "log_level.cpp"
     INCLUDE_DIRS "include"
     WHOLE_ARCHIVE
-    PRIV_REQUIRES app_driver app_config app_utils app_mqtt app_webui app_display app_audio app_console
+    PRIV_REQUIRES app_driver app_config app_utils app_mqtt app_webui app_display app_audio app_console app_agent
                   nvs_flash esp_timer espressif__button espressif__esp_board_manager
                   espressif__esp_lcd_touch espressif__esp-sr lvgl__lvgl espressif__esp_lvgl_port
                   esp_netif lwip console esp_hw_support spi_flash esp_psram esp_app_format

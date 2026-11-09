@@ -20,7 +20,10 @@
 #include "app_console.h"
 #include "app_driver.h"
 #include "app_mqtt.h"
+#include "app_agent.h"
 #include "heating.h"
+
+#include <strings.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +38,7 @@
 static void set_strip(uint8_t hue, uint8_t sat, uint8_t bri);
 static void strip_off(void);
 static void strip_idle(void);
+static void agent_ops_install(void);
 
 /* ── one console command, for bench use with no network ──────────────── */
 
@@ -521,6 +525,87 @@ esp_err_t app_logic_init(void)
     /* "Connecting" until the broker session is up (off before Wi-Fi exists). */
     strip_idle();
 
+    agent_ops_install();
+
     ESP_LOGI(TAG, "heating panel logic up");
     return ESP_OK;
+}
+
+/* ── the voice agent's view of the product (app_agent_ops_t) ──────────── */
+
+static int agent_set_target(int room_idx, float celsius)
+{
+    int16_t tenth = heating_clamp_tenth((int16_t)(celsius * 10.0f + (celsius >= 0 ? 0.5f : -0.5f)));
+    switch (heating_request_target(room_idx, tenth)) {
+        case HEATING_REQ_OK:          return 0;
+        case HEATING_REQ_OFFLINE:     return 1;
+        case HEATING_REQ_ALREADY_SET: return 2;
+        default:                      return 3;
+    }
+}
+
+static int agent_room_count(void) { return HEATING_ROOMS; }
+
+static int agent_find_room(const char *name)
+{
+    if (name == NULL || name[0] == 0) return -1;
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        if (strcasecmp(heating_room(i)->cfg.name, name) == 0) return i;
+    }
+    /* Second pass, forgiving: "the office" or "office room" still lands. */
+    for (int i = 0; i < HEATING_ROOMS; i++) {
+        const char *rn = heating_room(i)->cfg.name;
+        if (strcasestr(name, rn) != NULL || strcasestr(rn, name) != NULL) return i;
+    }
+    return -1;
+}
+
+static const char *agent_room_name(int idx)
+{
+    heating_room_t *r = heating_room(idx);
+    return r ? r->cfg.name : "";
+}
+
+static void agent_status_json(char *buf, size_t len)
+{
+    size_t w = (size_t)snprintf(buf, len, "{\"online\":%s,\"rooms\":[",
+                                heating_online() ? "true" : "false");
+    for (int i = 0; i < HEATING_ROOMS && w + 8 < len; i++) {
+        heating_room_t *r = heating_room(i);
+        int16_t tenth = 0;
+        bool stale = true;
+        bool have = heating_room_current(r, &tenth, &stale, NULL);
+        if (have) {
+            w += (size_t)snprintf(buf + w, len - w,
+                     "%s{\"name\":\"%s\",\"current_c\":%.1f,\"target_c\":%.1f,\"fresh\":%s}",
+                     i ? "," : "", r->cfg.name, tenth / 10.0,
+                     heating_room_target_ui(r) / 10.0, stale ? "false" : "true");
+        } else {
+            w += (size_t)snprintf(buf + w, len - w,
+                     "%s{\"name\":\"%s\",\"current_c\":null,\"target_c\":%.1f,\"fresh\":false}",
+                     i ? "," : "", r->cfg.name, heating_room_target_ui(r) / 10.0);
+        }
+    }
+    if (w + 3 < len) snprintf(buf + w, len - w, "]}");
+}
+
+static void agent_banner(const char *text)
+{
+    heating_ui_banner(text);
+    heating_ui_poke();
+}
+
+static void agent_pause_audio(bool pause)
+{
+    app_audio_pause_feed(pause);
+}
+
+static void agent_ops_install(void)
+{
+    static const app_agent_ops_t k_ops = {
+        agent_set_target, agent_room_count, agent_find_room,
+        agent_room_name, agent_status_json, agent_banner, agent_pause_audio,
+    };
+    app_agent_set_ops(&k_ops);
+    app_agent_init();
 }

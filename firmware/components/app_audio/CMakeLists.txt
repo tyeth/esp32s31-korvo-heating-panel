@@ -28,5 +28,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     EMBED_FILES "voice_test.pcm"
     PRIV_REQUIRES app_dsp_shim espressif__esp-sr app_driver app_config app_logic esp_driver_i2s
-                  espressif__esp_board_manager espressif__esp_codec_dev esp_timer
+                  espressif__esp_board_manager espressif__esp_codec_dev esp_timer app_agent
 )

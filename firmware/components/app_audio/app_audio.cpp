@@ -1,4 +1,5 @@
 #include "app_audio.h"
+#include "app_agent.h"
 #include "app_dsp_shim.h"
 #include "app_driver.h"
 #include "app_config.h"
@@ -131,15 +132,22 @@ void app_audio_voice_test(void)
     app_audio_listen_once();      /* open the command window, as the button does */
 }
 
-/* Scratch for one AFE chunk: samples * 3 (decimation), mono. */
+/* Scratch for one AFE chunk: samples * 3 (decimation), mono. In PSRAM — as
+ * static BSS these sat in the internal RAM the network stack ran out of. */
 #define VMIC_VMIC_MAX_CHUNK 1024
-static int16_t s_mic_raw[VMIC_VMIC_MAX_CHUNK * MIC_DECIM];
+static int16_t *s_mic_raw = NULL;    /* VMIC_VMIC_MAX_CHUNK * MIC_DECIM */
 
 /* Fixed-name contract declared in app_audio.h — see this block's block.yml.
  * Blocking read; returns the sample count actually produced (16 kHz mono). */
 size_t zc_audio_mic_read(int16_t *dest, size_t samples)
 {
     if (dest == NULL) return 0;
+    if (s_mic_raw == NULL) {
+        s_mic_raw = (int16_t *)heap_caps_malloc(
+            VMIC_VMIC_MAX_CHUNK * MIC_DECIM * sizeof(int16_t),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_mic_raw == NULL) return 0;
+    }
 
     /* An armed voice-test preempts the mic until the sample runs out; paced to
      * real time so the AFE's internal buffering behaves as it does live. */
@@ -188,8 +196,15 @@ size_t zc_audio_mic_read(int16_t *dest, size_t samples)
         };
         static int16_t s_hist[32] = {0};
         /* ext = the 32 carried samples + this chunk, so every tap window is
-         * fully populated. */
-        static int16_t s_ext[32 + VMIC_VMIC_MAX_CHUNK * MIC_DECIM];
+         * fully populated. PSRAM, like every audio buffer here: internal RAM
+         * belongs to the network stack. */
+        static int16_t *s_ext = NULL;
+        if (s_ext == NULL) {
+            s_ext = (int16_t *)heap_caps_malloc(
+                (32 + VMIC_VMIC_MAX_CHUNK * MIC_DECIM) * sizeof(int16_t),
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (s_ext == NULL) return done;
+        }
         memcpy(s_ext, s_hist, sizeof(s_hist));
         memcpy(s_ext + 32, s_mic_raw, raw_frames * sizeof(int16_t));
         for (size_t o = 0; o < want; o++) {
@@ -327,29 +342,40 @@ static void audio_detect_task(void *arg)
      * spec's push-to-talk trigger. Either way the window is one request long,
      * which is what keeps idle CPU down. */
     bool listening = false;
+    bool agent_mode = false;     /* this window records for the cloud agent */
 
     while (1) {
         afe_fetch_result_t *res = s_afe->fetch(s_afe_data);
-        if (!res || res->ret_value == ESP_FAIL) continue;
+        if (!res || res->ret_value == ESP_FAIL) {
+            /* Nothing to fetch — above all while the feed is paused for the
+             * agent. A bare continue here busy-spun at this task's priority
+             * and starved the TLS handshake it was paused FOR. */
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
 
         if (s_btn_window && !listening) {
             listening = true;
+            agent_mode = app_agent_configured();
             s_mn->clean(s_mn_data);
             s_win_len = 0;       /* a fresh capture for this window */
             heating_ui_poke();   /* the request just woke the screen */
-            ESP_LOGI(TAG, "button press — listening for a command");
-            heating_voice_print_vocabulary();
+            ESP_LOGI(TAG, "button press — listening (%s)",
+                     agent_mode ? "agent: recording 5 s for transcription" : "local grammar");
+            if (!agent_mode) heating_voice_print_vocabulary();
             audio_on_event(1);
             continue;
         }
 
         if (!listening && res->wakeup_state == WAKENET_DETECTED) {
             listening = true;
+            agent_mode = app_agent_configured();
             s_mn->clean(s_mn_data);
             s_win_len = 0;       /* a fresh capture for this window */
             heating_ui_poke();   /* the wake word just woke the screen */
-            ESP_LOGI(TAG, "wake word detected — listening for a command");
-            heating_voice_print_vocabulary();
+            ESP_LOGI(TAG, "wake word detected — listening (%s)",
+                     agent_mode ? "agent: recording 5 s for transcription" : "local grammar");
+            if (!agent_mode) heating_voice_print_vocabulary();
             audio_on_event(1);
             continue;
         }
@@ -357,7 +383,8 @@ static void audio_detect_task(void *arg)
         if (!listening) continue;
 
         /* Keep the window's processed audio: a doubtful match is settled by
-         * decoding this same capture again (heating_voice reinterpretation). */
+         * decoding this same capture again (heating_voice reinterpretation),
+         * and in agent mode this IS the recording that goes to the STT. */
         if (s_win != NULL && res->data != NULL && res->data_size > 0) {
             size_t add = (size_t)res->data_size / sizeof(int16_t);
             if (s_win_len + add > WIN_MAX_SAMPLES) add = WIN_MAX_SAMPLES - s_win_len;
@@ -365,6 +392,25 @@ static void audio_detect_task(void *arg)
                 memcpy(s_win + s_win_len, res->data, add * sizeof(int16_t));
                 s_win_len += add;
             }
+        }
+
+        if (agent_mode) {
+            /* No local grammar: record 5 s (a second press ends it early),
+             * then the capture goes out for transcription and the agent acts.
+             * The feed pauses meanwhile — the HTTPS round trips take seconds
+             * and the ring would only fill behind a busy task. */
+            if (s_win_len >= (size_t)16000 * 5) {
+                listening = false;
+                audio_on_event(0);
+                s_btn_window = false;
+                /* Asynchronous: the agent's worker owns the network calls on
+                 * its own stack; the recogniser goes straight back to wake. */
+                esp_err_t err = app_agent_handle_utterance(s_win, s_win_len);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "agent utterance not queued: %s", esp_err_to_name(err));
+                }
+            }
+            continue;
         }
 
         esp_mn_state_t st = s_mn->detect(s_mn_data, res->data);
@@ -477,10 +523,13 @@ esp_err_t app_audio_init(void)
 
     /* "M" = one mic channel, no reference channel (no AEC — nothing plays back
      * into this mic in the reference products). */
-    /* HIGH_PERF: better noise/echo cleanup ahead of the recogniser. The
-     * low-cost mode left real commands under the detection threshold at
-     * living-room distance; this panel has PSRAM to spare for it. */
-    afe_config_t *afe_cfg = afe_config_init("M", s_models, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+    /* LOW_COST again, deliberately: HIGH_PERF buys recognition quality with
+     * INTERNAL RAM, and it helped exhaust it to the point where lwIP could
+     * not allocate the pbufs to SEND — new DNS queries and TCP SYNs silently
+     * never left the radio while the established MQTT socket kept working.
+     * The agent path needs the AFE only as a recorder for Whisper, which
+     * forgives a lot more than MultiNet did. */
+    afe_config_t *afe_cfg = afe_config_init("M", s_models, AFE_TYPE_SR, AFE_MODE_LOW_COST);
     if (!afe_cfg) {
         ESP_LOGE(TAG, "afe_config_init failed");
         return ESP_ERR_NO_MEM;
@@ -542,10 +591,9 @@ esp_err_t app_audio_init(void)
     s_mn->print_active_speech_commands(s_mn_data);
 
     xTaskCreate(audio_feed_task, "audio_feed", 4096, NULL, 5, NULL);
-    /* 24 KB: the detect task also rebuilds MultiNet grammars at runtime for
-     * the reinterpretation passes (heating_voice), and the 396-phrase FST
-     * build aborted the panel on the stock 8 KB stack. */
-    xTaskCreate(audio_detect_task, "audio_detect", 24576, NULL, 5, NULL);
+    /* 16 KB: runtime FST rebuilds are gone (one resident grammar), and the
+     * 24 KB this briefly held was internal RAM the network stack needed. */
+    xTaskCreate(audio_detect_task, "audio_detect", 16384, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Voice framework initialized");
     return ESP_OK;

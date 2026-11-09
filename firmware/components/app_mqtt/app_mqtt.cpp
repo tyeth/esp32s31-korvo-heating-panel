@@ -850,6 +850,12 @@ esp_err_t app_mqtt_init(void)
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
+    /* No modem power save: with the default MIN_MODEM the radio naps between
+     * beacons and TLS handshakes to the agent's endpoints kept dying mid-way
+     * (ESP_ERR_HTTP_CONNECT / WRITE_DATA, intermittent DNS) while the same
+     * network served the PC fine. A wall-powered panel has no battery to save. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
 
     /* Our own task handles the network events (connect, disconnect log +
      * retry, broker start); the loop's handler only queues them — see
