@@ -86,9 +86,6 @@ static bool         s_dimmed = false;
 static lv_indev_t *s_touch_indev = NULL;
 static int s_touch_x = -1;
 static int s_touch_y = -1;
-/* A tap that closed an overlay must not also land on the card under it. */
-static bool s_swallow_release = false;
-
 /* The card detail overlay (chart + last-seen), NULL while closed. */
 static lv_obj_t *s_detail = NULL;
 static int       s_detail_room = -1;
@@ -100,7 +97,13 @@ static lv_obj_t *s_detail_lo = NULL;
 static lv_obj_t *s_detail_span = NULL;
 static lv_obj_t *s_detail_chart = NULL;
 static lv_chart_series_t *s_detail_series = NULL;
-static int32_t   s_detail_vals[HEATING_HIST_LEN];   /* the chart's ext array */
+/* The chart draws at most this many points; wider windows are bucket-averaged. */
+#define DETAIL_POINTS_MAX 360
+static int32_t   s_detail_vals[DETAIL_POINTS_MAX];  /* the chart's ext array */
+static int16_t   s_detail_hist[HEATING_HIST_LEN];   /* raw copy per refresh */
+/* Tapping the chart cycles the window. */
+static const int k_detail_hours[] = { 48, 3, 12 };
+static int       s_detail_scale = 0;
 
 static uint32_t now_ms(void)
 {
@@ -184,10 +187,6 @@ static void detail_refresh(void);
 static void touch_hit(int x, int y)
 {
     touch_activity();
-    if (s_swallow_release) {                 /* this tap closed an overlay */
-        s_swallow_release = false;
-        return;
-    }
     for (int i = 0; i < HEATING_ROOMS; i++) {
         int cx = GRID_X + (i % 2) * (CARD_W + GRID_GAP_X);
         int cy = GRID_Y + (i / 2) * (CARD_H + GRID_GAP_Y);
@@ -255,9 +254,10 @@ static void popup_close(void)
 
 static void on_popup_event(lv_event_t *e)
 {
+    /* Deleting the popup resets the input device mid-press, so the release
+     * never reaches the cards below — no tap leaks through. */
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
         touch_activity();
-        s_swallow_release = true;   /* the release must not tap the card below */
         popup_close();
     }
 }
@@ -332,8 +332,17 @@ static void on_detail_event(lv_event_t *e)
 {
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
         touch_activity();
-        s_swallow_release = true;
         detail_close();
+    }
+}
+
+/* A tap on the chart itself cycles the window instead of closing. */
+static void on_chart_event(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        touch_activity();
+        s_detail_scale = (s_detail_scale + 1) % (int)(sizeof(k_detail_hours) / sizeof(k_detail_hours[0]));
+        detail_refresh();
     }
 }
 
@@ -370,33 +379,53 @@ static void detail_refresh(void)
              room->mode == HEATING_HEATING ? "heat" : "off");
     lv_label_set_text(s_detail_target, buf);
 
-    /* The chart: right-aligned history, newest sample at the right edge. */
-    int16_t hist[HEATING_HIST_LEN];
-    int n = heating_history_get(s_detail_room, hist, HEATING_HIST_LEN);
+    /* The chart: the chosen window's samples, newest at the right edge, with
+     * wide windows bucket-averaged down to the drawable point count. The y
+     * range follows the data. */
+    int hours = k_detail_hours[s_detail_scale];
+    int window = hours * 3600 / HEATING_HIST_PERIOD_S;          /* samples */
+    if (window > HEATING_HIST_LEN) window = HEATING_HIST_LEN;
+    int bucket = (window + DETAIL_POINTS_MAX - 1) / DETAIL_POINTS_MAX;
+    int points = window / bucket;
+
+    int n = heating_history_get(s_detail_room, s_detail_hist, HEATING_HIST_LEN);
     int32_t lo = INT32_MAX, hi = INT32_MIN;
-    for (int k = 0; k < HEATING_HIST_LEN; k++) {
-        int16_t v = (k < HEATING_HIST_LEN - n) ? HEATING_HIST_NONE : hist[k - (HEATING_HIST_LEN - n)];
-        if (v == HEATING_HIST_NONE) {
-            s_detail_vals[k] = LV_CHART_POINT_NONE;
+    for (int p = 0; p < points; p++) {
+        /* Sample index (from the window's start) of this bucket, mapped onto
+         * the right-aligned history: the newest sample fills the last point. */
+        int32_t sum = 0, cnt = 0;
+        for (int b = 0; b < bucket; b++) {
+            int k = n - window + p * bucket + b;    /* index into history */
+            if (k < 0 || k >= n) continue;
+            int16_t v = s_detail_hist[k];
+            if (v == HEATING_HIST_NONE) continue;
+            sum += v;
+            cnt++;
+        }
+        if (cnt == 0) {
+            s_detail_vals[p] = LV_CHART_POINT_NONE;
         } else {
-            s_detail_vals[k] = v;
+            int32_t v = sum / cnt;
+            s_detail_vals[p] = v;
             if (v < lo) lo = v;
             if (v > hi) hi = v;
         }
     }
-    if (lo > hi) {                            /* nothing sampled yet */
+    lv_chart_set_point_count(s_detail_chart, points);
+
+    if (lo > hi) {                            /* nothing sampled in the window */
         lo = 150; hi = 250;
         lv_label_set_text(s_detail_hi, "");
         lv_label_set_text(s_detail_lo, "");
-        lv_label_set_text(s_detail_span, "chart fills in as samples arrive (one per 2 min)");
+        snprintf(buf, sizeof(buf), "last %dh: no samples yet - tap chart for scale", hours);
+        lv_label_set_text(s_detail_span, buf);
     } else {
         lo -= 5; hi += 5;
         snprintf(buf, sizeof(buf), "%d.%d", (int)(hi / 10), (int)((hi % 10 + 10) % 10));
         lv_label_set_text(s_detail_hi, buf);
         snprintf(buf, sizeof(buf), "%d.%d", (int)(lo / 10), (int)((lo % 10 + 10) % 10));
         lv_label_set_text(s_detail_lo, buf);
-        int mins = n * HEATING_HIST_PERIOD_S / 60;
-        snprintf(buf, sizeof(buf), "last %dh %02dm - gaps are missed reports", mins / 60, mins % 60);
+        snprintf(buf, sizeof(buf), "last %dh - gaps are missed reports - tap chart for scale", hours);
         lv_label_set_text(s_detail_span, buf);
     }
     lv_chart_set_axis_range(s_detail_chart, LV_CHART_AXIS_PRIMARY_Y, lo, hi);
@@ -436,8 +465,10 @@ static void detail_open(int i)
     lv_obj_set_size(s_detail_chart, 688, 240);
     lv_obj_align(s_detail_chart, LV_ALIGN_BOTTOM_MID, 0, -30);
     lv_chart_set_type(s_detail_chart, LV_CHART_TYPE_LINE);
-    lv_chart_set_point_count(s_detail_chart, HEATING_HIST_LEN);
+    lv_chart_set_point_count(s_detail_chart, DETAIL_POINTS_MAX);
     lv_chart_set_div_line_count(s_detail_chart, 5, 7);
+    lv_obj_add_flag(s_detail_chart, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_detail_chart, on_chart_event, LV_EVENT_PRESSED, NULL);
     lv_obj_set_style_bg_color(s_detail_chart, lv_color_hex(0x101010), 0);
     lv_obj_set_style_border_color(s_detail_chart, lv_color_hex(0x333333), 0);
     lv_obj_set_style_line_color(s_detail_chart, lv_color_hex(0x262626), LV_PART_MAIN);

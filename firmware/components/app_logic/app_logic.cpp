@@ -182,16 +182,37 @@ uint8_t heating_strip_brightness(void)
     return s_bri_day;
 }
 
-void heating_strip_set_brightness(uint8_t bri)
+/* The save and the refresh run on the esp_timer task: the voice agent calls
+ * heating_strip_set_brightness() from a task whose STACK is in PSRAM, and an
+ * NVS commit disables the flash cache mid-write — the first touch of that
+ * PSRAM stack then resets the chip (logged as a bare POWERON, no backtrace).
+ * The esp_timer task's stack is internal RAM, where flash writes are legal. */
+static esp_timer_handle_t s_bri_timer = NULL;
+
+static void bri_commit_cb(void *arg)
 {
-    s_bri_day = bri;
+    (void)arg;
     nvs_handle_t h;
     if (nvs_open("heating", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, "sbri", bri);
+        nvs_set_u8(h, "sbri", s_bri_day);
         nvs_commit(h);
         nvs_close(h);
     }
     strip_idle();                     /* apply to whatever state is showing */
+}
+
+void heating_strip_set_brightness(uint8_t bri)
+{
+    s_bri_day = bri;
+    if (s_bri_timer == NULL) {
+        const esp_timer_create_args_t args = {
+            .callback = bri_commit_cb,
+            .name = "sbri",
+        };
+        if (esp_timer_create(&args, &s_bri_timer) != ESP_OK) return;
+    }
+    esp_timer_stop(s_bri_timer);
+    esp_timer_start_once(s_bri_timer, 1000);   /* now, but off this task */
 }
 
 static void strip_load_brightness(void)
@@ -600,11 +621,21 @@ static void agent_pause_audio(bool pause)
     app_audio_pause_feed(pause);
 }
 
+static int agent_set_strip_percent(int percent)
+{
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    uint8_t bri = (uint8_t)((percent * 254 + 50) / 100);
+    heating_strip_set_brightness(bri);
+    return bri;
+}
+
 static void agent_ops_install(void)
 {
     static const app_agent_ops_t k_ops = {
         agent_set_target, agent_room_count, agent_find_room,
-        agent_room_name, agent_status_json, agent_banner, agent_pause_audio,
+        agent_room_name, agent_status_json, agent_banner,
+        agent_set_strip_percent, agent_pause_audio,
     };
     app_agent_set_ops(&k_ops);
     app_agent_init();

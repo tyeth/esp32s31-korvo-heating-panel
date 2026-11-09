@@ -223,10 +223,17 @@ static const char *k_tools_json =
  "{\"type\":\"function\",\"function\":{\"name\":\"get_status\","
   "\"description\":\"Current rooms, temperatures, targets and link state\","
   "\"parameters\":{\"type\":\"object\",\"properties\":{}}}},"
+ "{\"type\":\"function\",\"function\":{\"name\":\"set_led_brightness\","
+  "\"description\":\"Set the panel's status LED strip brightness, 0-100 percent (0 = off)\","
+  "\"parameters\":{\"type\":\"object\",\"properties\":{"
+    "\"percent\":{\"type\":\"number\"}},\"required\":[\"percent\"]}}},"
  "{\"type\":\"function\",\"function\":{\"name\":\"run_lua\","
   "\"description\":\"Run a short Lua 5.4 script on the panel. API: "
     "heating.set(room_name_or_index, celsius) -> ok, msg; "
-    "heating.rooms() -> array of {name, index}; log(text). "
+    "heating.rooms() -> array of {name, index}; "
+    "heating.status() -> json string; "
+    "panel.led(percent) -> stored 0..254 (status LED strip); "
+    "panel.banner(text) shows text on the screen; log(text). "
     "No io/os; 400k instruction budget.\","
   "\"parameters\":{\"type\":\"object\",\"properties\":{"
     "\"script\":{\"type\":\"string\"}},\"required\":[\"script\"]}}}]";
@@ -276,6 +283,20 @@ static char *tool_dispatch(const char *name, cJSON *args)
         }
         return out;
     }
+    if (strcmp(name, "set_led_brightness") == 0) {
+        cJSON *pct = cJSON_GetObjectItem(args, "percent");
+        if (!cJSON_IsNumber(pct) || s_ops->set_strip_percent == NULL) {
+            snprintf(out, 1024, "error: percent (number 0-100) required");
+            return out;
+        }
+        int p = (int)pct->valuedouble;
+        if (p < 0) p = 0;
+        if (p > 100) p = 100;
+        int stored = s_ops->set_strip_percent(p);
+        if (stored < 0) snprintf(out, 1024, "error: refused");
+        else snprintf(out, 1024, "LED strip set to %d%% (%d/254), saved", p, stored);
+        return out;
+    }
     if (strcmp(name, "run_lua") == 0) {
         cJSON *script = cJSON_GetObjectItem(args, "script");
         if (!cJSON_IsString(script)) {
@@ -301,10 +322,12 @@ static void system_prompt(char *buf, size_t len)
         "You are the voice agent of a wall-mounted heating panel (ESP32). "
         "You control real radiator valves over zigbee2mqtt via the tools. "
         "Rules: setpoints are 5..30 C in 0.5 steps; stay within 15..25 unless "
-        "the user explicitly asks beyond. Use run_lua for anything multi-step "
-        "or conditional. Confirm what you DID in one short sentence (it is "
-        "shown on a small screen); if the request is not about heating, answer "
-        "briefly and do nothing. Current device state: %s", state);
+        "the user explicitly asks beyond. You also control the panel itself: "
+        "set_led_brightness is its status LED strip. Use run_lua for anything "
+        "multi-step or conditional. Confirm what you DID in one short sentence "
+        "(it is shown on a small screen); if the request is about neither "
+        "heating nor this panel, answer briefly and do nothing. "
+        "Current device state: %s", state);
 }
 
 static esp_err_t agent_run(const char *user_text)

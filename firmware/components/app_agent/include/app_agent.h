@@ -38,6 +38,9 @@ typedef struct {
     /** The live capability manifest: rooms, temperatures, targets, link. */
     void (*status_json)(char *buf, size_t len);
     void (*banner)(const char *text);          /* on the LCD, 4.5 s */
+    /** Status LED strip brightness in percent (0 = off). Returns the 0..254
+     *  value actually stored, or -1 when refused. */
+    int  (*set_strip_percent)(int percent);
     /** Quiet the audio pipeline while the agent works: the TLS handshake is
      *  software crypto on this chip and the AFE otherwise owns the CPU. */
     void (*pause_audio)(bool pause);

@@ -94,6 +94,42 @@ static int l_heating_rooms(lua_State *L)
     return 1;
 }
 
+static int l_heating_status(lua_State *L)
+{
+    lua_ctx_t *c = ctx_of(L);
+    if (c == NULL || c->ops == NULL) return luaL_error(L, "no device ops");
+    char state[768];
+    c->ops->status_json(state, sizeof(state));
+    lua_pushstring(L, state);
+    return 1;
+}
+
+/* The panel's own knobs — the self-manipulation half of the capability
+ * surface, so "dim the LED then warm the office" is one script. */
+static int l_panel_led(lua_State *L)
+{
+    lua_ctx_t *c = ctx_of(L);
+    if (c == NULL || c->ops == NULL || c->ops->set_strip_percent == NULL)
+        return luaL_error(L, "no device ops");
+    int pct = (int)luaL_checkinteger(L, 1);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    int stored = c->ops->set_strip_percent(pct);
+    char msg[48];
+    snprintf(msg, sizeof(msg), "led %d%% (%d/254)", pct, stored);
+    ctx_print(c, msg);
+    lua_pushinteger(L, stored);
+    return 1;
+}
+
+static int l_panel_banner(lua_State *L)
+{
+    lua_ctx_t *c = ctx_of(L);
+    if (c == NULL || c->ops == NULL) return luaL_error(L, "no device ops");
+    c->ops->banner(luaL_checkstring(L, 1));
+    return 0;
+}
+
 /* A 400k-instruction budget: a script that spins never hangs the recogniser's
  * task (which is where the agent, and this sandbox, run). */
 static void budget_hook(lua_State *L, lua_Debug *ar)
@@ -128,9 +164,14 @@ int agent_lua_run(const app_agent_ops_t *ops, const char *script,
     lua_setfield(L, LUA_REGISTRYINDEX, "agent_ctx");
 
     lua_newtable(L);
-    lua_pushcfunction(L, l_heating_set);   lua_setfield(L, -2, "set");
-    lua_pushcfunction(L, l_heating_rooms); lua_setfield(L, -2, "rooms");
+    lua_pushcfunction(L, l_heating_set);    lua_setfield(L, -2, "set");
+    lua_pushcfunction(L, l_heating_rooms);  lua_setfield(L, -2, "rooms");
+    lua_pushcfunction(L, l_heating_status); lua_setfield(L, -2, "status");
     lua_setglobal(L, "heating");
+    lua_newtable(L);
+    lua_pushcfunction(L, l_panel_led);    lua_setfield(L, -2, "led");
+    lua_pushcfunction(L, l_panel_banner); lua_setfield(L, -2, "banner");
+    lua_setglobal(L, "panel");
     lua_pushcfunction(L, l_log);
     lua_setglobal(L, "log");
 
